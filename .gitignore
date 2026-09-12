@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+runs/
+runtime/
+dist/
+.env
+.env.*
+!.env.example
+config/resource-secrets.json
+config/resources.json
+config/datasets.json
+config/datasets/
+*.key
+auth.json
+.DS_Store
