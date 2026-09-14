@@ -9,6 +9,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from .serving import normalize_chat_url
 from .backend import build_backend
 from .catalog import discover_operator_catalog, catalog_version, search_catalog, with_sources
 from .compiler import compile_spec, ordered_steps, render_dataflow_pipeline
@@ -89,13 +90,16 @@ def load_config(path=None, **overrides):
     cfg.setdefault("resource_secrets", {})
     for resource in cfg["resources"].values():
         args = resource.get("args", {})
-        allowed = {"api_url", "key_name_of_api_key", "model_name", "temperature", "max_workers", "max_retries", "connect_timeout", "read_timeout"}
+        allowed = {"api_url", "key_name_of_api_key", "model_name", "temperature", "max_workers", "max_tokens", "max_retries", "connect_timeout", "read_timeout"}
         if resource.get("type") != "api_llm" or set(args) - allowed:
             raise ValueError("Resources support api_llm with allowlisted constructor arguments only")
         if not args.get("key_name_of_api_key", "").startswith("DF_PIPELINE_"):
             raise ValueError("Pipeline credentials must use a dedicated DF_PIPELINE_* environment variable")
         if not args.get("api_url", "").startswith(("http://", "https://")):
             raise ValueError("API resources require an explicit HTTP or HTTPS URL")
+        args["api_url"] = normalize_chat_url(args["api_url"])
+        if int(args.get("max_workers", 1)) < 1 or int(args.get("max_tokens", 1)) < 1:
+            raise ValueError("API resource max_workers and max_tokens must be positive")
     cfg["backend"] = os.getenv("CODEX_BACKEND", cfg.get("backend", "codex"))
     return cfg
 

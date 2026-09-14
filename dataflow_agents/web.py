@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import ast
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,7 @@ from typing import Any
 
 from .catalog import discover_operator_catalog, load_catalog, search_catalog
 from .compiler import render_dataflow_pipeline
+from .serving import normalize_chat_url
 from .execution import approve, execute
 from .identities import IDENTITIES
 from .orchestrator import Orchestrator, load_config
@@ -292,8 +294,9 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
         if not key_name.startswith("DF_PIPELINE_"):
             raise HTTPException(status_code=422, detail="key_name_of_api_key must start with DF_PIPELINE_")
         cfg.setdefault("resources", {})[name] = {"type": "api_llm", "args": {
-            "api_url": api_url, "key_name_of_api_key": key_name, "model_name": model_name,
-            "temperature": float(payload.get("temperature", 0.2)), "max_workers": int(payload.get("max_workers", 2)),
+            "api_url": normalize_chat_url(api_url), "key_name_of_api_key": key_name, "model_name": model_name,
+            "temperature": float(payload.get("temperature", 0.2)), "max_workers": max(1, int(payload.get("max_workers", 2))),
+            "max_tokens": max(1, int(payload.get("max_tokens", 1024))),
             "max_retries": int(payload.get("max_retries", 2)), "connect_timeout": 10, "read_timeout": 120}}
         if api_key:
             cfg.setdefault("resource_secrets", {})[name] = api_key
@@ -496,6 +499,44 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
         if path.suffix == ".jsonl" or path.suffix == ".py":
             return FileResponse(path)
         return JSONResponse(_read_json(path, {}))
+
+    @app.get("/api/v1/runs/{run_id}/pipeline-code")
+    def pipeline_code(run_id: str):
+        """Return the complete generated pipeline source for in-browser review."""
+        root = _safe_run(cfg, run_id)
+        path = root / "pipeline.py"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="Pipeline code is not generated yet")
+        try:
+            operators = []
+            spec = _read_json(root / "pipeline-spec.json", {}) or {}
+            for step in spec.get("steps", []):
+                source_file = step.get("source_file", "")
+                custom = bool(step.get("proposal"))
+                base = root if custom else Path(cfg["dataflow_root"]).resolve()
+                item = {"id": step["step_id"], "name": step["operator"],
+                        "filename": source_file, "kind": "custom" if custom else "dataflow",
+                        "code": "", "error": None, "changed": False}
+                candidate = (base / source_file).resolve()
+                # Never serve arbitrary files through a modified spec or symlink.
+                allowed = (base / ("custom" if custom else "dataflow/operators")).resolve()
+                if (not source_file or Path(source_file).is_absolute()
+                        or not candidate.is_relative_to(allowed)
+                        or not allowed.is_relative_to(base) or candidate.suffix != ".py"):
+                    item["error"] = "Operator source path is outside its source directory"
+                else:
+                    try:
+                        raw = candidate.read_bytes()
+                        item["code"] = raw.decode("utf-8")
+                        item["sha256"] = hashlib.sha256(raw).hexdigest()
+                        expected = step.get("source_sha256")
+                        item["changed"] = bool(expected and expected != item["sha256"])
+                    except (OSError, UnicodeError):
+                        item["error"] = "Operator source file is missing or unreadable"
+                operators.append(item)
+            return {"run_id": run_id, "filename": path.name, "code": path.read_text(encoding="utf-8"), "operators": operators}
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Cannot read pipeline code: {exc}") from exc
 
     @app.post("/api/v1/runs/{run_id}/approve")
     def approve_run(run_id: str, payload: dict[str, Any] | None = None):

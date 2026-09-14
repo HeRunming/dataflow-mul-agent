@@ -1,0 +1,3 @@
+# Run from this repository root. Install the SAME checkout used by DATAFLOW_ROOT.
+-e ../DataFlow
+-e .[web,test]

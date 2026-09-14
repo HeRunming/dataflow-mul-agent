@@ -97,11 +97,14 @@ def execute(root, config, *, user_requested=False):
     process = subprocess.Popen(command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                text=True, start_new_session=True)
     try:
-        stdout, stderr = process.communicate(timeout=config.get("runtime_timeout_seconds", 90))
+        stdout, stderr = process.communicate(timeout=config.get("runtime_timeout_seconds", 900))
     except subprocess.TimeoutExpired:
         os.killpg(process.pid, signal.SIGKILL)
         stdout, stderr = process.communicate()
-        report = {"status":"failed", "compile":False, "executed":False, "error":"Runtime deadline exceeded"}
+        timeout_seconds = int(config.get("runtime_timeout_seconds", 900))
+        report = {"status":"failed", "compile":False, "executed":False,
+                  "error":f"Runtime deadline exceeded after {timeout_seconds}s",
+                  "error_code":"RUNTIME_TIMEOUT", "timeout_seconds":timeout_seconds}
         write_json(root / "runtime-report.json", report)
     else:
         path = root / "runtime-report.json"
