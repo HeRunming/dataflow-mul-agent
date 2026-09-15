@@ -31,6 +31,7 @@ from .identities import IDENTITIES
 from .orchestrator import Orchestrator, load_config
 from .team import TeamStore, write_json
 from .conversation import ConversationStore, classify_message, message as conversation_message
+from .skills import SkillRegistry
 
 try:  # Keep importing the core package possible without the optional web deps.
     from fastapi import FastAPI, HTTPException, Request
@@ -454,6 +455,8 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
             data = json.loads(created.body.decode("utf-8"))
             new_run = data["run_id"]
             write_json(runs_root / new_run / "revision.json", {"parent_run_id": run_id, "revision_number": int(item.get("active_revision", 0)) + 1, "change_request": text})
+            item.setdefault("revisions", []).append({"revision": int(item.get("active_revision", 0)) + 1, "run_id": new_run,
+                                                       "parent_run_id": run_id, "change_request": text, "created_at": time.time()})
             item["active_run_id"] = new_run
             item["active_revision"] = int(item.get("active_revision", 0)) + 1
             item["status"] = "running"
@@ -561,6 +564,65 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
     @app.get("/api/v1/runs/{run_id}/agent-outputs")
     def agent_outputs(run_id: str) -> list[dict[str, Any]]:
         return _agent_outputs(_safe_run(cfg, run_id))
+
+    @app.get("/api/v1/runs/{run_id}/collaboration")
+    def collaboration(run_id: str):
+        root = _safe_run(cfg, run_id)
+        events = _events(root)
+        latest = {}
+        agents = {}
+        for event in events:
+            agent = event.get("agent") or "system"
+            entry = agents.setdefault(agent, {"agent": agent, "state": "idle", "events": 0, "jobs": [], "skills": []})
+            entry["events"] += 1
+            entry["last_event"] = event.get("event")
+            entry["updated"] = event.get("timestamp")
+            if event.get("job") and event["job"] not in entry["jobs"]:
+                entry["jobs"].append(event["job"])
+            if event.get("skill") and event["skill"] not in entry["skills"]:
+                entry["skills"].append(event["skill"])
+            if event.get("event") in {"agent.started", "workflow.state"}:
+                entry["state"] = "running"
+            elif event.get("event") == "agent.completed":
+                entry["state"] = "completed"
+            elif event.get("event") == "agent.failed":
+                entry["state"] = "failed"
+            latest[agent] = event
+        return {"run_id": run_id, "state": _run_summary(root)["state"], "agents": list(agents.values()), "events": events,
+                "outputs": _agent_outputs(root), "latest": latest}
+
+    @app.get("/api/v1/runs/{run_id}/skills")
+    def run_skills(run_id: str):
+        root = _safe_run(cfg, run_id)
+        registry = SkillRegistry()
+        skill_root = Path(__file__).parents[1] / ".agents" / "skills"
+        calls = [event for event in _events(root) if event.get("event") in {"skill.invoked", "tool.called"}]
+        result = []
+        for name in registry.names():
+            skill = registry.get(name)
+            path = skill_root / name.replace("_", "-") / "SKILL.md"
+            raw = path.read_bytes() if path.exists() else b""
+            result.append({"name": name, "purpose": skill.purpose, "input_schema": skill.input_schema,
+                           "output_schema": skill.output_schema, "dependencies": list(skill.dependencies),
+                           "security_boundary": skill.security_boundary, "hash": hashlib.sha256(raw).hexdigest() if raw else None,
+                           "calls": [call for call in calls if call.get("skill") == name or call.get("job", "").startswith(name)]})
+        return {"run_id": run_id, "skills": result}
+
+    @app.get("/api/v1/runs/{run_id}/evidence")
+    def run_evidence(run_id: str):
+        root = _safe_run(cfg, run_id)
+        names = ("status.json", "static-validation.json", "runtime-report.json", "verification.json", "metrics.json", "integrity.json", "traces.json")
+        return {"run_id": run_id, "artifacts": [{"name": name, "available": (root / name).exists(), "value": _read_json(root / name)} for name in names]}
+
+    @app.get("/api/v1/runs/{run_id}/revisions")
+    def run_revisions(run_id: str):
+        _safe_run(cfg, run_id)
+        items = []
+        for candidate in sorted(runs_root.glob("run-*")):
+            metadata = _read_json(candidate / "revision.json") or {}
+            if candidate.name == run_id or metadata.get("parent_run_id") == run_id:
+                items.append({"run_id": candidate.name, **metadata, **_run_summary(candidate)})
+        return {"run_id": run_id, "revisions": items}
 
     @app.get("/api/v1/runs/{run_id}/stream")
     async def stream_events(run_id: str, after: int = 0) -> StreamingResponse:
