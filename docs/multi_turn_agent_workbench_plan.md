@@ -601,4 +601,25 @@ License
 - 复杂的跨 Run 自动复用。
 - 直接引入大型状态管理框架。
 
+## 13. 本轮交付状态
+
+本计划的可运行 MVP 已完成并集成到现有工作台：
+
+- Conversation Controller、消息持久化和确定性意图路由。
+- 新任务、进度查询、artifact 查询和 revision 重跑；旧 Run 保留。
+- Run SSE 与会话 API；前端实时刷新 Agent/Skill 事件。
+- Agent collaboration 聚合接口、Skill 元数据/hash 接口、Evidence 和 Revision 接口。
+- 前端 Conversation、Agent collaboration、事件时间线、代码预览和基础 Inspector。
+- README、安装说明和 API 入口同步更新。
+
+验证命令：
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+npm run build --prefix frontend
+git diff --check
+```
+
+Vue Flow、Shiki、Playwright 和跨 revision 增量复用属于后续体验增强，不影响当前多轮对话与真实协作观测闭环。
+
 这样可以先证明“用户可以和系统持续对话，并真实看到多 Agent 协作”，再逐步增加 revision、Vue Flow 和高级自动化能力。
