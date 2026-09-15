@@ -30,6 +30,7 @@ from .execution import approve, execute
 from .identities import IDENTITIES
 from .orchestrator import Orchestrator, load_config
 from .team import TeamStore, write_json
+from .conversation import ConversationStore, classify_message, message as conversation_message
 
 try:  # Keep importing the core package possible without the optional web deps.
     from fastapi import FastAPI, HTTPException, Request
@@ -218,6 +219,7 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
         cfg["resource_secrets"].update(_read_json(secret_path, {}) or {})
     runs_root = Path(cfg["runs_root"]).resolve()
     runs_root.mkdir(parents=True, exist_ok=True)
+    conversation_store = ConversationStore(runs_root)
     workers = max(1, int(cfg.get("api_workers", 4)))
     executor = __import__("concurrent.futures", fromlist=["ThreadPoolExecutor"]).ThreadPoolExecutor(max_workers=workers)
     app = FastAPI(title="DataFlow Multi-Codex", version="1.0.0")
@@ -398,6 +400,97 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
         roots = sorted((p for p in runs_root.glob("run-*") if p.is_dir()),
                        key=lambda p: (_read_json(p / "status.json", {}).get("updated", p.stat().st_mtime), p.name), reverse=True)
         return [_run_summary(root) for root in roots[:100]]
+
+    @app.post("/api/v1/conversations")
+    def create_conversation(payload: dict[str, Any] | None = None):
+        return conversation_store.create(str((payload or {}).get("title", "")).strip())
+
+    @app.get("/api/v1/conversations")
+    def list_conversations():
+        return {"conversations": conversation_store.list()}
+
+    @app.get("/api/v1/conversations/{conversation_id}")
+    def get_conversation(conversation_id: str):
+        item = conversation_store.get(conversation_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return item
+
+    @app.post("/api/v1/conversations/{conversation_id}/messages")
+    async def post_conversation_message(conversation_id: str, payload: dict[str, Any]):
+        item = conversation_store.get(conversation_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        text = str(payload.get("content", payload.get("message", ""))).strip()
+        if not text:
+            raise HTTPException(status_code=422, detail="content is required")
+        intent = classify_message(text, bool(item.get("active_run_id")))
+        user_msg = conversation_message("user", text, intent, item.get("active_run_id"), item.get("active_revision", 0))
+        item = conversation_store.append(conversation_id, user_msg)
+        run_id = item.get("active_run_id")
+        response = ""
+        if intent == "new_task":
+            run_payload = dict(payload)
+            run_payload["request"] = text
+            created = await create_run(run_payload)
+            data = json.loads(created.body.decode("utf-8"))
+            run_id = data["run_id"]
+            item["active_run_id"] = run_id
+            item["active_revision"] = int(item.get("active_revision", 0)) + 1
+            item["status"] = "running"
+            response = f"已创建 Run {run_id}，正在调度 Planner、算子专家、Integrator 和 Verifier。"
+        elif intent == "status_query" and run_id:
+            summary = _run_summary(_safe_run(cfg, run_id))
+            response = f"当前 Run {run_id} 状态：{summary['state']}。" + (f" {summary['summary']}" if summary.get("summary") else "")
+        elif intent == "artifact_query" and run_id:
+            response = f"已定位到 Run {run_id} 的 Pipeline、Operator、事件和验证证据，可在工作台查看。"
+        elif intent == "revision" and run_id:
+            base = _safe_run(cfg, run_id)
+            original = _read_json(base / "request.json", {}) or {}
+            input_path = base / "input.jsonl"
+            rows = [json.loads(line) for line in input_path.read_text(encoding="utf-8").splitlines() if line.strip()] if input_path.exists() else None
+            run_payload = {"request": text, "input_rows": rows, "input_keys": original.get("input_keys"), "allow_custom": True}
+            created = await create_run(run_payload)
+            data = json.loads(created.body.decode("utf-8"))
+            new_run = data["run_id"]
+            write_json(runs_root / new_run / "revision.json", {"parent_run_id": run_id, "revision_number": int(item.get("active_revision", 0)) + 1, "change_request": text})
+            item["active_run_id"] = new_run
+            item["active_revision"] = int(item.get("active_revision", 0)) + 1
+            item["status"] = "running"
+            run_id = new_run
+            response = f"已创建 revision {item['active_revision']}（Run {new_run}），旧 Run 保留不变。"
+        else:
+            response = "我需要一个具体的数据处理需求，或请先创建任务。"
+        controller_msg = conversation_message("controller", response, intent, run_id, item.get("active_revision", 0))
+        item["status"] = "running" if run_id else "awaiting_user"
+        item.setdefault("messages", []).append(controller_msg)
+        conversation_store.save(item)
+        return {"conversation": item, "message": controller_msg, "intent": intent, "run_id": run_id}
+
+    @app.get("/api/v1/conversations/{conversation_id}/stream")
+    async def conversation_stream(conversation_id: str, after: int = 0):
+        if not conversation_store.get(conversation_id):
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        async def generator():
+            cursor = after
+            idle = 0
+            while idle < 300:
+                item = conversation_store.get(conversation_id) or {}
+                messages = item.get("messages", [])
+                for index, msg in enumerate(messages[cursor:], start=cursor + 1):
+                    yield f"id: {index}\ndata: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                    cursor = index
+                run_id = item.get("active_run_id")
+                if run_id:
+                    root = runs_root / run_id
+                    for event in _events(root) if root.is_dir() else []:
+                        key = int(event.get("seq", 0))
+                        if key > cursor:
+                            yield f"event: run\nid: {key}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                            cursor = key
+                idle += 1
+                await asyncio.sleep(0.5)
+        return StreamingResponse(generator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
     @app.delete("/api/v1/runs/{run_id}")
     def delete_run(run_id: str):

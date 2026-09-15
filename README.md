@@ -90,6 +90,21 @@ Serving 与算子绑定保持独立：pipeline 只保存稳定的 `$resource` �
 
 WebUI 还提供 `/api/v1/models`（以及 serving/resources 别名）用于向 API 的 `/models` 或 `/model` 端点发现模型；API key 可在 serving 表单中填写，后端保存到被 `.gitignore` 排除且权限为 0600 的 secret registry，执行时才注入子进程环境。数据集可通过 `/api/v1/datasets` 注册、预览、切换和删除；`POST /api/v1/runs` 支持 `dataset_id`，会使用数据集样本和完整数据集生成输入快照。已有 pipeline 可通过 `POST /api/v1/runs/{run_id}/execute` 直接执行，`GET /api/v1/runs/{run_id}/stages` 展示每个 DataFlow cache 阶段的真实输出。
 
+### Multi-Turn Conversation Workbench
+
+工作台顶部的 **Conversation Controller** 支持在同一会话中连续提出新任务、查询进度、查看证据和修改需求。Controller 只负责结构化路由，实际规划、算子绑定、Pipeline 拼装和验证仍由四个执行 Agent 完成；修改需求会创建新的 revision/Run，旧 Run 保留用于审计和对比。右侧 Agent activity 通过 Run SSE 实时更新，展示 Agent、Skill、工具调用和验证事件。
+
+会话 API：
+
+```text
+POST /api/v1/conversations
+GET  /api/v1/conversations/{conversation_id}
+POST /api/v1/conversations/{conversation_id}/messages
+GET  /api/v1/conversations/{conversation_id}/stream
+```
+
+详细设计和后续增量复用路线见 [docs/multi_turn_agent_workbench_plan.md](docs/multi_turn_agent_workbench_plan.md)。
+
 代码预览入口为 **View Pipeline / Operator code**。Pipeline 标签显示当前 run 的完整 `pipeline.py`；Operator 标签按最终 `pipeline-spec.json` 的步骤选择算子，已有算子读取 DataFlow 源文件，自定义算子读取 run 下的 `custom/*.py`。预览不会执行源码，文件缺失或与生成时哈希不一致会明确提示。接口为 `GET /api/v1/runs/{run_id}/pipeline-code`，保留原有 `code` 字段，并返回含 step id、文件名、来源、完整代码和状态的 `operators` 数组。
 
 ## 验证
