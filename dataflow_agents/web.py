@@ -588,6 +588,11 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
             elif event.get("event") == "agent.failed":
                 entry["state"] = "failed"
             latest[agent] = event
+        identity_map = {identity.agent_id: identity for identity in IDENTITIES}
+        for agent, entry in agents.items():
+            identity = identity_map.get(agent)
+            if identity:
+                entry.update({"name": identity.name, "purpose": identity.purpose, "tools": list(identity.tools), "forbidden": list(identity.forbidden)})
         return {"run_id": run_id, "state": _run_summary(root)["state"], "agents": list(agents.values()), "events": events,
                 "outputs": _agent_outputs(root), "latest": latest}
 

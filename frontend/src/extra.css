@@ -15,7 +15,7 @@
 .pipeline-code code{font:inherit}
 .code-notice{padding:10px;background:#fff7e8;color:#88591d;font-size:12px}
 .serving-options{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.serving-options label{display:flex;flex-direction:column;gap:4px;font-size:10px;color:#697891}.serving-options input{width:100%;box-sizing:border-box}
-.conversation-panel { margin-bottom: 14px; }
+.conversation-panel { margin-bottom: 14px; border-top: 3px solid #2b8aef; }
 .conversation-messages { display: grid; gap: 8px; max-height: 210px; overflow: auto; padding: 4px 0 10px; }
 .conversation-message { display: grid; gap: 3px; max-width: 88%; padding: 9px 11px; border-radius: 10px; background: var(--surface-2, #f4f6f8); font-size: 13px; }
 .conversation-message.user { justify-self: end; background: #e8f1ff; }
@@ -36,3 +36,6 @@
 .inspector-tabs button { border: 0; background: transparent; color: #738091; padding: 3px 6px; cursor: pointer; }
 .inspector-tabs button.active { color: #1e5ba8; border-bottom: 2px solid #2b8aef; }
 .inspector pre { max-height: 170px; overflow: auto; font-size: 10px; white-space: pre-wrap; }
+.inspector-content, .inspector-list { display: grid; gap: 6px; font-size: 12px; }
+.inspector-content span, .inspector-row span, .inspector-row small { color: #718096; }
+.inspector-row { display: grid; gap: 2px; border-bottom: 1px solid #edf0f4; padding: 5px 0; }
