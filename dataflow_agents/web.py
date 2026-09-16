@@ -610,7 +610,7 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
             result.append({"name": name, "purpose": skill.purpose, "input_schema": skill.input_schema,
                            "output_schema": skill.output_schema, "dependencies": list(skill.dependencies),
                            "security_boundary": skill.security_boundary, "hash": hashlib.sha256(raw).hexdigest() if raw else None,
-                           "calls": [call for call in calls if call.get("skill") == name or call.get("job", "").startswith(name)]})
+                           "calls": [call for call in calls if str(call.get("skill", "")).replace("-", "_") == name or str(call.get("job", "")).replace("-", "_").startswith(name)]})
         return {"run_id": run_id, "skills": result}
 
     @app.get("/api/v1/runs/{run_id}/evidence")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import inspect
+import pprint
 from .serving import normalize_chat_url
 from .catalog import extract_source
 
@@ -340,7 +341,17 @@ if __name__ == "__main__":
 '''
 
 def render_dataflow_pipeline(spec, **kwargs):
-    source = "SPEC = " + repr(json.loads(json.dumps(spec, sort_keys=True))) + "\nfrom urllib.parse import urlsplit, urlunsplit\n" + inspect.getsource(normalize_chat_url) + "\n" + RUNTIME_SOURCE
+    # Keep generated source close to the idiomatic DataFlow examples: imports,
+    # declarative pipeline metadata, small operator wiring class, and an
+    # explicit forward method.  The metadata is pretty-printed so reviewers
+    # can inspect fields and operator arguments without one unreadable line.
+    normalized = json.loads(json.dumps(spec, sort_keys=True))
+    spec_text = pprint.pformat(normalized, width=100, sort_dicts=False)
+    source = ("\"\"\"Generated DataFlow pipeline.\n"
+              "This file is produced from a validated pipeline spec; edit the spec or agents, then regenerate.\n"
+              "\"\"\"\n\n"
+              "SPEC = " + spec_text + "\n\n"
+              "from urllib.parse import urlsplit, urlunsplit\n\n" + inspect.getsource(normalize_chat_url) + "\n" + RUNTIME_SOURCE)
     ast.parse(source)
     return source
 
