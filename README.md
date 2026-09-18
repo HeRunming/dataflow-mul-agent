@@ -28,7 +28,8 @@
 | 多角色协作 | Codex 模式下，每次角色调用启动独立 `codex exec` 进程；Specialist 按步骤并行，Integrator 等待汇合 |
 | 基于源码的算子选择 | AST 提取 DataFlow 注册算子、参数签名与源码 hash，优先复用已有算子 |
 | 生成与运行分离 | 先静态检查 spec，再由用户显式启动 DataFlow 编译与执行 |
-| 代码与数据审阅 | Pipeline / Operator 双标签、源码变更提示、每阶段 JSONL 输出表格 |
+| 原生风格代码 | 生成的 `pipeline.py` 与 DataFlow 自带示例同构：公共包导入、命名算子属性、显式 `forward()`，可直接单独运行 |
+| 代码与数据审阅 | Pipeline / Runner / Operator 三个标签、语法高亮、源码变更提示、每阶段 JSONL 输出表格 |
 | 可观察的工作流 | SQLite jobs/events、Run SSE、角色输出、Skill 元数据、运行报告与文件 hash |
 | 对话工作台 | 新对话、进度查询、基础需求修改；阶段消息仅在对话框展示 |
 | 故障定位 | 有界重试、超时诊断、Codex 传输日志；删除操作处理重复请求和临时文件清理竞争 |
@@ -45,7 +46,7 @@ flowchart TD
     P --> S2[Operator Specialist · 步骤 2 … N]
     S1 --> I[Pipeline Integrator · 字段与参数对齐]
     S2 --> I
-    I --> G[声明式 spec / 静态检查 / pipeline.py]
+    I --> G[声明式 spec / 静态检查 / 原生 pipeline.py]
     G --> R[READY · 已生成]
     R -->|Web：点击 Run pipeline| X[DataFlow compile + execute]
     X --> E[EXECUTED · 运行报告与输出]
@@ -125,7 +126,7 @@ Provider 需要兼容 **Responses API**。以上占位值需替换；启动命�
 
 1. **开始需求**：从 DataFlow 助手发送请求。点击 **新对话** 创建独立上下文；已有 Run 继续保留。
 2. **观察生成**：查看阶段播报、角色状态、Skill 调用和失败事件。Runs 列表独立滚动，支持选择历史任务。
-3. **审阅代码**：检查完整 Pipeline 和各步骤 Operator 源码。源码缺失或 hash 变化会提示。
+3. **审阅代码**：`pipeline.py` 是可直接 `python pipeline.py` 运行的原生 DataFlow pipeline；`run_pipeline.py` 是工作台执行器（fixtures、运行报告、输出投影）；Operator 标签展示每一步的真实源码。源码缺失或 hash 变化会提示。
 4. **显式执行**：配置需要的 Serving 后点击 **Run pipeline**，查看状态、报错和 Stage output review。
 5. **继续反馈**：可询问进度或提出修改；当前 revision 会新建 Run，而不会覆盖父 Run。建议发送完整修改后的需求，避免依赖尚未实现的复杂上下文推理。
 
@@ -153,7 +154,9 @@ runs/run-…/
 ├── team.sqlite / events.jsonl          # 任务状态与事件
 ├── agents/<job>/<attempt>/            # 角色输入、输出、Codex 轨迹、传输诊断
 ├── plan.json / bindings.json          # 规划与算子绑定
-├── pipeline-spec.json / pipeline.py   # 声明式契约与可执行代码
+├── pipeline-spec.json                 # 声明式契约
+├── pipeline.py / run_pipeline.py     # 原生风格 pipeline 与工作台执行器
+├── custom/<Operator>.py              # 本次生成的算子（如有）
 ├── static-validation.json            # 生成阶段静态检查
 ├── runtime-report.json / output.jsonl # 实际执行后才产生
 └── verification.json / integrity.json # 取决于是否运行独立验证流程
@@ -187,7 +190,7 @@ git diff --check
 
 - **Controller 为 MVP**：使用关键字路由和模板回复，尚未实现独立顶层 Codex 推理代理；阶段播报来自真实事件，但不是模型生成的语义摘要。
 - **Revision 完整重跑**：保留父 Run 引用和原输入，不提供跨 Run 增量复用、完善的 diff / 回滚界面或可靠的复杂需求合并。
-- **生成代码是通用执行器**：spec 多行展示，运行时按步骤构造 Operator；尚未生成与 DataFlow 手写示例完全一致的逐算子显式类结构。
+- **生成代码不做手写级重构**：`pipeline.py` 采用 DataFlow 原生结构（公共包导入、逐算子属性、显式 `forward()`），但算子顺序与参数直接来自 spec，不会合并步骤或重命名业务变量。
 - **实时能力以 Run SSE 为主**：前端有轮询回退；Conversation SSE 仍是实验接口，尚无完整的恢复游标保证。会话保存在本地 JSON，非多进程事务存储。
 - **数据与历史交互仍有限**：Runs API 当前最多返回 100 条，没有分页；前端尚无完整历史会话切换与 revision 对比。
 - **本地运行边界**：服务默认绑定 localhost，无应用级鉴权；本地子进程不等同于容器沙箱。生产部署需要额外的身份校验、执行隔离与密钥管理。

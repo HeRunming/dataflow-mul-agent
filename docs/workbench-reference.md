@@ -58,6 +58,23 @@ curl -sS http://127.0.0.1:8000/api/v1/runs \
 
 对话消息 API 也可接收首个新任务的 `input_rows` / `dataset_id`。当前前端助手提交的是页面持有的输入行，不应假定它总是传递完整注册数据集。
 
+## 生成的 Pipeline 文件
+
+一次生成会在 run 目录写入三类源码：
+
+| 文件 | 内容 |
+| --- | --- |
+| `pipeline.py` | 原生风格 DataFlow pipeline：从算子公共包导入、`FileStorage` 与 serving 以字面参数构造、每步一个命名属性、`forward()` 逐个调用 `run(storage=self.storage.step(), …)`，末尾是 `if __name__ == "__main__"` 块。可直接 `python pipeline.py` 运行（默认读取同目录 `./input.jsonl`，写入 `./cache`） |
+| `run_pipeline.py` | 工作台执行器：覆写输入与 cache 路径、检测 LLM 空响应、跑生成算子的 fixtures、`compile()` 后执行，并按 `final_keys` 投影输出、写 `runtime-report.json` |
+| `custom/<Operator>.py` | 本次生成的算子（若有），由 `pipeline.py` 以 `from custom.<Operator> import <Operator>` 导入 |
+
+`pipeline.py` 中不包含 SPEC 字典、注册表查找或命令行参数；改动应发生在 spec 或 Agent 侧，然后重新生成。工作台执行时使用的命令等价于：
+
+```bash
+python run_pipeline.py --input input.jsonl --cache cache \
+  --output candidate.jsonl --report runtime-report.json --execute
+```
+
 ## 状态与执行语义
 
 | 状态 | 含义 |

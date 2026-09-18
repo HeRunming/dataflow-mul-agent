@@ -58,16 +58,38 @@ def extract_source(source, module, source_file):
                       "registered": True})
     return found
 
+def public_import_path(root, rel_path, name, cache=None):
+    """Return the shallowest package that re-exports ``name``.
+
+    DataFlow examples import operators from the package root
+    (``from dataflow.operators.general_text import HashDeduplicateFilter``)
+    rather than the defining module. Generated pipelines follow the same
+    convention, so the public path is resolved against the real ``__init__``
+    files and falls back to the defining module when nothing re-exports it.
+    """
+    cache = {} if cache is None else cache
+    parts = Path(rel_path).with_suffix("").parts
+    for depth in range(3, len(parts)):
+        package = ".".join(parts[:depth])
+        if package not in cache:
+            init = Path(root).joinpath(*parts[:depth], "__init__.py")
+            cache[package] = init.read_text(encoding="utf-8") if init.is_file() else ""
+        if re.search(rf"\b{re.escape(name)}\b", cache[package]):
+            return package
+    return ".".join(parts)
+
 def discover_operator_catalog(dataflow_root):
     root = Path(dataflow_root).resolve()
     if not (root / "dataflow/operators").is_dir():
         raise ValueError(f"DataFlow repository not found: {root}")
-    result = []
+    result, cache = [], {}
     for path in sorted((root / "dataflow/operators").rglob("*.py")):
         if path.name == "__init__.py":
             continue
         rel = path.relative_to(root)
-        result.extend(extract_source(path.read_text(encoding="utf-8"), ".".join(rel.with_suffix("").parts), rel.as_posix()))
+        for op in extract_source(path.read_text(encoding="utf-8"), ".".join(rel.with_suffix("").parts), rel.as_posix()):
+            op["import_path"] = public_import_path(root, rel, op["name"], cache)
+            result.append(op)
     return result
 
 def catalog_version(catalog):

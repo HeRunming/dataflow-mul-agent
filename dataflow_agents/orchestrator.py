@@ -12,7 +12,8 @@ from pathlib import Path
 from .serving import normalize_chat_url
 from .backend import build_backend
 from .catalog import discover_operator_catalog, catalog_version, search_catalog, with_sources
-from .compiler import compile_spec, ordered_steps, render_dataflow_pipeline
+from .compiler import compile_spec, ordered_steps
+from .codegen import write_pipeline_sources
 from .contracts import SCHEMAS, PROMPTS
 from .execution import execute, file_hash, manifest
 from .memory import ExperienceStore
@@ -255,12 +256,10 @@ class Orchestrator:
                     continue
                 raise ValueError("; ".join(errors))
             write_json(root / "pipeline-spec.json", spec)
-            (root / "pipeline.py").write_text(render_dataflow_pipeline(spec), encoding="utf-8")
+            write_pipeline_sources(root, spec, request["request"])
             for b in spec["steps"]:
                 if b["proposal"]:
                     path = root / b["source_file"]
-                    path.parent.mkdir(exist_ok=True)
-                    path.write_text(b["proposal"]["source"], encoding="utf-8")
                     store.event("skill.invoked", "operator_specialist", b["step_id"], skill="operator-scaffolding", source_hash=file_hash(path))
             if not self.config.get("auto_execute", False):
                 store.checkpoint("READY", backend=self.config["backend"],

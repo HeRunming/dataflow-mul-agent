@@ -9,11 +9,25 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from .codegen import RUNNER_FILENAME, render_pipeline_runner
 from .team import digest, write_json
 
 
 def file_hash(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def ensure_runner(root):
+    """Keep the workbench runner next to the pipeline it executes.
+
+    The runner is workbench code rather than generated content, so a run
+    created before it existed is refreshed instead of rejected.
+    """
+    path = Path(root) / RUNNER_FILENAME
+    source = render_pipeline_runner()
+    if not path.exists() or path.read_text(encoding="utf-8") != source:
+        path.write_text(source, encoding="utf-8")
+    return path
 
 
 def manifest(root):
@@ -65,6 +79,7 @@ def execute(root, config, *, user_requested=False):
     root = Path(root).resolve()
     spec = json.loads((root / "pipeline-spec.json").read_text())
     check_sources(spec, config["dataflow_root"])
+    ensure_runner(root)
     missing_resources = []
     resource_secrets = config.get("resource_secrets", {})
     for name, resource in spec.get("resources", {}).items():
@@ -90,9 +105,10 @@ def execute(root, config, *, user_requested=False):
         if not key.startswith("DF_PIPELINE_") or not secret:
             raise ValueError("Missing dedicated pipeline credential: " + key)
         env[key] = secret
-    command = [config.get("python_bin", sys.executable), str(root / "pipeline.py"),
+    command = [config.get("python_bin", sys.executable), str(root / RUNNER_FILENAME),
                "--input", str(root / "input.jsonl"), "--cache", str(root / "cache"),
-               "--output", str(root / "candidate.jsonl"), "--report", str(root / "runtime-report.json"), "--execute"]
+               "--output", str(root / "candidate.jsonl"), "--report", str(root / "runtime-report.json"),
+               "--spec", str(root / "pipeline-spec.json"), "--pipeline", str(root / "pipeline.py"), "--execute"]
     started = time.monotonic()
     process = subprocess.Popen(command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                text=True, start_new_session=True)

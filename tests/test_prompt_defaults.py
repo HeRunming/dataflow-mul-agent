@@ -10,6 +10,7 @@ from dataflow.prompts.reasoning.math import MathAnswerGeneratorPrompt
 from dataflow_agents.catalog import discover_operator_catalog
 from dataflow_agents.compiler import compile_spec, normalize_operator_defaults, render_dataflow_pipeline
 from dataflow_agents.orchestrator import load_config
+from dataflow_agents.pipeline_runner import read_last
 from dataflow_agents.prompt_templates import OPERATOR_PROMPTS, PROMPT_CLASSES, normalize_prompt, instantiate_prompt
 
 
@@ -23,30 +24,48 @@ class LocalServing(LLMServingABC):
     def cleanup(self): pass
 
 
+LOCAL_RESOURCE = {'llm_default': {'type': 'api_llm', 'args': {
+    'api_url': 'http://127.0.0.1:1/v1', 'model_name': 'mock',
+    'key_name_of_api_key': 'DF_PIPELINE_TEST_KEY'}}}
+
+
+def build(source, serving):
+    """Execute generated source with the API serving replaced by a local stub."""
+    namespace = {'__name__': 'generated_test'}
+    exec(compile(source, '<generated>', 'exec'), namespace)
+    namespace['APILLMServing_request'] = lambda **kwargs: serving
+    name = next(key for key in namespace if key.endswith('Pipeline') and key != 'PipelineABC')
+    return namespace, name
+
+
 class PromptDefaultTests(unittest.TestCase):
     def setUp(self):
         self.step = {'step_id': 'answer', 'operator': 'ReasoningAnswerGenerator',
+                     'import_path': 'dataflow.operators.reasoning',
                      'proposal': None, 'init_args': {'llm_serving': {'$resource': 'llm_default'}},
                      'prepare_fields': {}, 'run_args': {'input_key': 'question', 'output_key': 'answer'},
                      'depends_on': [], 'rationale': 'Answer questions'}
-        self.spec = {'steps': [self.step], 'resources': {}, 'initial_keys': ['question'],
+        self.spec = {'steps': [self.step], 'resources': copy.deepcopy(LOCAL_RESOURCE),
+                     'servings': copy.deepcopy(LOCAL_RESOURCE), 'initial_keys': ['question'],
                      'final_keys': ['question', 'answer']}
 
-    def test_old_spec_renders_and_executes_real_operator_without_remote_api(self):
+    def test_spec_renders_and_executes_real_operator_without_remote_api(self):
         original = copy.deepcopy(self.spec)
-        namespace = {'__name__': 'generated_test'}
-        exec(compile(render_dataflow_pipeline(self.spec), '<generated>', 'exec'), namespace)
         serving = LocalServing()
-        namespace['RESOURCE_CACHE']['llm_default'] = serving
+        source = render_dataflow_pipeline(self.spec)
+        # The default prompt is named in the source rather than left implicit.
+        self.assertIn('prompt_template=MathAnswerGeneratorPrompt()', source)
+        self.assertIn('from dataflow.prompts.reasoning.math import MathAnswerGeneratorPrompt', source)
+        namespace, name = build(source, serving)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             input_file = root/'input.jsonl'
             input_file.write_text(json.dumps({'question': 'What is 1 + 1?'})+'\n')
-            pipeline = namespace['GeneratedPipeline'](input_file, root/'cache')
-            self.assertIsInstance(pipeline.op_0.prompts, MathAnswerGeneratorPrompt)
+            pipeline = namespace[name](str(input_file), str(root/'cache'))
+            self.assertIsInstance(pipeline.reasoning_answer_generator_step1.prompts, MathAnswerGeneratorPrompt)
             pipeline.compile()
             pipeline.forward()
-            rows = namespace['read_last'](pipeline).to_dict(orient='records')
+            rows = read_last(pipeline).to_dict(orient='records')
         self.assertEqual(rows, [{'question': 'What is 1 + 1?', 'answer': 'The answer is 2.'}])
         self.assertIn('What is 1 + 1?', serving.prompts[0])
         self.assertEqual(self.spec, original)
@@ -106,17 +125,15 @@ class PromptDefaultTests(unittest.TestCase):
         step.update(operator='ReasoningQuestionFilter', run_args={'input_key': 'question'})
         step['init_args']['prompt_template'] = 'MathQuestionFilterPrompt'
         spec['final_keys'] = ['question']
-        namespace = {'__name__': 'generated_test'}
-        exec(compile(render_dataflow_pipeline(spec), '<generated>', 'exec'), namespace)
         serving = LocalServing()
         serving.generate_from_input = Mock(return_value=['{"judgement_test": true}'])
-        namespace['RESOURCE_CACHE']['llm_default'] = serving
+        namespace, name = build(render_dataflow_pipeline(spec), serving)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             input_file = root/'input.jsonl'
             input_file.write_text(json.dumps({'question': 'What is 1 + 1?'})+'\n')
-            pipeline = namespace['GeneratedPipeline'](input_file, root/'cache')
+            pipeline = namespace[name](str(input_file), str(root/'cache'))
             pipeline.compile()
             pipeline.forward()
-            self.assertEqual(len(namespace['read_last'](pipeline)), 1)
+            self.assertEqual(len(read_last(pipeline)), 1)
         self.assertEqual(spec['steps'][0]['init_args']['prompt_template'], 'MathQuestionFilterPrompt')
