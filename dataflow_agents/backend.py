@@ -79,17 +79,40 @@ class CodexBackend(AgentBackend):
         started = time.monotonic()
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, env=env, start_new_session=True)
+        timeout = cfg.get("timeout_seconds", 240)
+        timed_out = False
         try:
-            stdout, stderr = process.communicate(instruction, timeout=cfg.get("timeout_seconds", 240))
+            stdout, stderr = process.communicate(instruction, timeout=timeout)
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
+            timed_out = True
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # The child may exit between the timeout and kill.
             stdout, stderr = process.communicate()
-            (directory / "codex-events.jsonl").write_text(redact(stdout), encoding="utf-8")
-            raise RuntimeError("Codex role timed out")
         (directory / "codex-events.jsonl").write_text(redact(stdout), encoding="utf-8")
         (directory / "stderr.log").write_text(redact(stderr), encoding="utf-8")
         write_json(directory / "transport.json", {"model":model, "duration_ms":round((time.monotonic()-started)*1000),
-                   "exit_code":process.returncode, "identity":agent_id, "provider_url":base})
+                   "exit_code":process.returncode, "identity":agent_id, "provider_url":base,
+                   "timed_out":timed_out, "timeout_seconds":timeout})
+        if timed_out:
+            upstream_error = ""
+            for line in stdout.splitlines():
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if event.get("type") == "error" and isinstance(event.get("message"), str):
+                    upstream_error = event["message"]
+                elif event.get("type") == "turn.failed" and isinstance(event.get("error"), dict):
+                    upstream_error = str(event["error"].get("message", upstream_error))
+            detail = redact(upstream_error or stderr.strip())[-900:]
+            reason = f"Codex role timed out after {timeout}s"
+            if detail:
+                reason += f"; last transport error: {detail}"
+            raise RuntimeError(reason)
         if process.returncode:
             raise RuntimeError(redact((stderr + stdout)[-2200:]))
         if last.exists():

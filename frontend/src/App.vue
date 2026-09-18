@@ -1,6 +1,7 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, nextTick } from 'vue'
 
+const deletingRuns = ref(new Set())
 const runs = ref([]), selectedId = ref(''), selected = ref(null), events = ref([]), agentOutputs = ref([])
 const datasets = ref([]), selectedDatasetId = ref(''), datasetPreview = ref([])
 const request = ref('清理文本中的多余空格并去重')
@@ -13,8 +14,11 @@ const stages = ref([]), selectedStage = ref(null)
 const collaboration = ref(null), runSkills = ref([]), runEvidence = ref([]), selectedInspector = ref(null), inspectorTab = ref('agent')
 const showCode = ref(false), pipelineCode = ref(''), operatorCodes = ref([]), activeCodeTab = ref('pipeline'), selectedOperatorId = ref(''), codeRunId = ref(''), codeBusy = ref(false)
 const conversation = ref(null), conversationMessages = ref([]), conversationInput = ref(''), conversationBusy = ref(false)
+const liveControllerMessages = ref([]), announcedEvents = new Set()
 let runStream = null
 let timer
+let selectionVersion = 0
+const newConversationBusy = ref(false), composerInput = ref(null)
 const stateOrder = ['PLANNING', 'BINDING', 'INTEGRATING', 'READY']
 const agents = [['planner', 'Planner', '拆解需求'], ['operator_specialist', 'Specialists', '选择算子'], ['pipeline_integrator', 'Integrator', '字段对齐'], ['verifier', 'Verifier', '验证证据']]
 const currentState = computed(() => selected.value?.state || 'IDLE')
@@ -30,22 +34,40 @@ async function registerDataset() { try { const rows = JSON.parse(dataset.value.r
 async function deleteDataset(id) { try { await api(`/api/v1/datasets/${id}`, { method: 'DELETE' }); if (selectedDatasetId.value === id) selectedDatasetId.value = ''; await loadDatasets() } catch (err) { error.value = err.message } }
 async function discoverModels() { modelBusy.value = true; try { models.value = (await api('/api/v1/models', { method: 'POST', body: JSON.stringify({ api_url: resource.value.api_url, api_key: resource.value.api_key }) })).models } catch (err) { error.value = err.message } finally { modelBusy.value = false } }
 async function registerResource() { try { await api('/api/v1/resources', { method: 'POST', body: JSON.stringify(resource.value) }); await loadResources(); showResource.value = false; resource.value.api_key = '' } catch (err) { error.value = err.message } }
-async function refreshRuns() { runs.value = await api('/api/v1/runs'); if (!selectedId.value && runs.value.length) selectedId.value = runs.value[0].run_id; if (selectedId.value) await selectRun(selectedId.value, false) }
+async function refreshRuns() {
+  runs.value = await api('/api/v1/runs')
+  if (selectedId.value) await selectRun(selectedId.value, false)
+}
 async function selectRun(id, reset = true) {
-  const previousStageId = selectedId.value === id ? selectedStage.value?.stage_id : null
+  if (deletingRuns.value.has(id)) return
+  const version = ++selectionVersion
+  const changed = selectedId.value !== id
   selectedId.value = id
-  if (reset) events.value = []
-  selected.value = await api(`/api/v1/runs/${id}`)
-  events.value = await api(`/api/v1/runs/${id}/events`)
-  agentOutputs.value = await api(`/api/v1/runs/${id}/agent-outputs`)
-  const data = await api(`/api/v1/runs/${id}/stages`)
-  stages.value = data.stages || []
-  selectedStage.value = stages.value.find(stage => stage.stage_id === previousStageId) || stages.value.at(-1) || null
-  collaboration.value = await api(`/api/v1/runs/${id}/collaboration`).catch(() => null)
-  const skillData = await api(`/api/v1/runs/${id}/skills`).catch(() => ({ skills: [] }))
-  runSkills.value = skillData.skills || []
-  const evidenceData = await api(`/api/v1/runs/${id}/evidence`).catch(() => ({ artifacts: [] }))
-  runEvidence.value = evidenceData.artifacts || []
+  if (changed) {
+    runStream?.close()
+    runStream = null
+    selectedStage.value = null
+    selectedInspector.value = null
+    liveControllerMessages.value = []
+    announcedEvents.clear()
+  }
+  const [run, runEvents, outputs, stageData, collab, skills, evidence] = await Promise.all([
+    api(`/api/v1/runs/${id}`), api(`/api/v1/runs/${id}/events`),
+    api(`/api/v1/runs/${id}/agent-outputs`), api(`/api/v1/runs/${id}/stages`),
+    api(`/api/v1/runs/${id}/collaboration`), api(`/api/v1/runs/${id}/skills`),
+    api(`/api/v1/runs/${id}/evidence`)
+  ])
+  // Requests from an old run or an old conversation must never restore it.
+  if (version !== selectionVersion || id !== selectedId.value) return
+  const stageId = selectedStage.value?.stage_id
+  selected.value = run
+  events.value = runEvents
+  agentOutputs.value = outputs
+  stages.value = stageData.stages || []
+  selectedStage.value = stages.value.find(stage => stage.stage_id === stageId) || stages.value.at(-1) || null
+  collaboration.value = collab
+  runSkills.value = skills.skills || []
+  runEvidence.value = evidence.artifacts || []
   if (reset) connectRunStream(id)
 }
 async function createRun() { busy.value = true; error.value = ''; try { const inputRows = selectedDatasetId.value ? undefined : JSON.parse(inputText.value); const created = await api('/api/v1/runs', { method: 'POST', body: JSON.stringify({ request: request.value, input_rows: inputRows, dataset_id: selectedDatasetId.value || undefined, allow_custom: allowCustom.value }) }); await selectRun(created.run_id); await refreshRuns() } catch (err) { error.value = err.message } finally { busy.value = false } }
@@ -66,11 +88,97 @@ async function viewPipelineCode() {
 }
 const activeOperator = computed(() => operatorCodes.value.find(item => item.id === selectedOperatorId.value))
 const activeCode = computed(() => activeCodeTab.value === 'pipeline' ? pipelineCode.value : (activeOperator.value?.code || ''))
-async function deleteRun(id) { try { await api(`/api/v1/runs/${id}`, { method: 'DELETE' }); if (selectedId.value === id) { selectedId.value = ''; selected.value = null }; await refreshRuns() } catch (err) { error.value = err.message } }
-async function tick() { if (!selectedId.value) return; try { await selectRun(selectedId.value, false); await refreshRuns() } catch (err) { error.value = err.message } }
+async function deleteRun(id) {
+  if (deletingRuns.value.has(id)) return
+  deletingRuns.value.add(id)
+  const wasSelected = selectedId.value === id
+  if (wasSelected) {
+    ++selectionVersion
+    runStream?.close()
+    runStream = null
+  }
+  try {
+    await api(`/api/v1/runs/${id}`, { method: 'DELETE' })
+    if (selectedId.value === id) {
+      ++selectionVersion
+      selectedId.value = ''
+      selected.value = null
+      events.value = []
+      agentOutputs.value = []
+      stages.value = []
+      selectedStage.value = null
+      collaboration.value = null
+      selectedInspector.value = null
+      runSkills.value = []
+      runEvidence.value = []
+      liveControllerMessages.value = []
+      announcedEvents.clear()
+      showCode.value = false
+    }
+    runs.value = runs.value.filter(run => run.run_id !== id)
+    await refreshRuns()
+  } catch (err) {
+    error.value = err.message
+    if (wasSelected && selectedId.value === id) connectRunStream(id)
+  } finally { deletingRuns.value.delete(id) }
+}
+async function tick() { if (newConversationBusy.value) return; try { await refreshRuns() } catch (err) { error.value = err.message } }
+async function startNewConversation() {
+  if (newConversationBusy.value || conversationBusy.value) return
+  newConversationBusy.value = true
+  error.value = ''
+  try {
+    const fresh = await api('/api/v1/conversations', { method: 'POST', body: JSON.stringify({ title: 'DataFlow workbench' }) })
+    ++selectionVersion
+    runStream?.close()
+    runStream = null
+    conversation.value = fresh
+    conversationMessages.value = []
+    conversationInput.value = ''
+    liveControllerMessages.value = []
+    announcedEvents.clear()
+    selectedId.value = ''
+    selected.value = null
+    events.value = []
+    agentOutputs.value = []
+    stages.value = []
+    selectedStage.value = null
+    collaboration.value = null
+    selectedInspector.value = null
+    runSkills.value = []
+    runEvidence.value = []
+    showCode.value = false
+    pipelineCode.value = ''
+    operatorCodes.value = []
+    newConversationBusy.value = false
+    await nextTick()
+    composerInput.value?.focus()
+  } catch (err) { error.value = err.message }
+  finally { newConversationBusy.value = false }
+}
 async function ensureConversation() { if (conversation.value) return; conversation.value = await api('/api/v1/conversations', { method: 'POST', body: JSON.stringify({ title: 'DataFlow workbench' }) }); conversationMessages.value = conversation.value.messages || [] }
-async function sendConversation() { const text = conversationInput.value.trim(); if (!text || conversationBusy.value) return; conversationBusy.value = true; error.value = ''; try { await ensureConversation(); const data = await api(`/api/v1/conversations/${conversation.value.conversation_id}/messages`, { method: 'POST', body: JSON.stringify({ content: text, input_rows: JSON.parse(inputText.value), allow_custom: allowCustom.value }) }); conversation.value = data.conversation; conversationMessages.value = conversation.value.messages || []; conversationInput.value = ''; if (data.run_id) { await selectRun(data.run_id); connectRunStream(data.run_id) } } catch (err) { error.value = err.message } finally { conversationBusy.value = false } }
-function connectRunStream(runId) { if (runStream) runStream.close(); runStream = new EventSource(`/api/v1/runs/${runId}/stream`); runStream.onmessage = event => { try { const item = JSON.parse(event.data); if (!events.value.some(e => e.seq === item.seq)) events.value.push(item); if (item.event === 'workflow.state' || item.event === 'agent.completed' || item.event === 'agent.failed') selectRun(runId, false) } catch (_) {} }; runStream.addEventListener('done', () => runStream?.close()); runStream.onerror = () => { runStream?.close(); runStream = null } }
+async function sendConversation() { const text = conversationInput.value.trim(); if (!text || conversationBusy.value || newConversationBusy.value) return; conversationBusy.value = true; error.value = ''; try { await ensureConversation(); const data = await api(`/api/v1/conversations/${conversation.value.conversation_id}/messages`, { method: 'POST', body: JSON.stringify({ content: text, input_rows: JSON.parse(inputText.value), allow_custom: allowCustom.value }) }); conversation.value = data.conversation; conversationMessages.value = conversation.value.messages || []; conversationInput.value = ''; if (data.run_id) { await selectRun(data.run_id) } } catch (err) { error.value = err.message } finally { conversationBusy.value = false } }
+function announceEvent(item) { if (!item?.seq || announcedEvents.has(`${item.trace_id}:${item.seq}`)) return; announcedEvents.add(`${item.trace_id}:${item.seq}`); let text = ''; if (item.event === 'agent.completed') { const labels = { planner: 'Planner 已完成任务拆解', operator_specialist: '算子专家已完成算子绑定', pipeline_integrator: 'Pipeline Integrator 已完成字段对齐与拼装', verifier: 'Verifier 已完成验证与证据检查' }; text = `${labels[item.agent] || `${item.agent} 已完成`}。${item.job ? `作业 ${item.job} 已产出结构化结果。` : ''}` } else if (item.event === 'agent.failed') text = `${item.agent || 'Agent'} 本次尝试失败，系统将依据事件记录进行重试或阻断。`; else if (item.event === 'workflow.state') { const labels = { PLANNING: '正在规划任务', BINDING: '正在并行匹配算子', INTEGRATING: '正在对齐字段并生成 Pipeline', VALIDATING: '正在执行契约校验', READY: 'Pipeline 已生成并通过静态检查', BLOCKED: '任务已阻断，请查看失败证据' }; text = labels[item.state] || `工作流状态更新为 ${item.state}` } if (text) liveControllerMessages.value.push({ message_id: `live-${item.trace_id}-${item.seq}`, role: 'controller', content: text, intent: 'progress_update', revision: conversation.value?.active_revision || 0 }) }
+function connectRunStream(runId) {
+  runStream?.close()
+  liveControllerMessages.value = []
+  announcedEvents.clear()
+  const stream = new EventSource(`/api/v1/runs/${runId}/stream`)
+  runStream = stream
+  stream.onmessage = event => {
+    if (stream !== runStream || runId !== selectedId.value) return
+    try {
+      const item = JSON.parse(event.data)
+      announceEvent(item)
+      if (!events.value.some(e => e.seq === item.seq)) events.value.push(item)
+      if (['workflow.state', 'agent.completed', 'agent.failed'].includes(item.event)) {
+        selectRun(runId, false).catch(err => { if (stream === runStream) error.value = err.message })
+      }
+    } catch (err) { error.value = err.message }
+  }
+  stream.addEventListener('done', () => { stream.close(); if (runStream === stream) runStream = null })
+  stream.onerror = () => { stream.close(); if (runStream === stream) runStream = null }
+}
 function labelState(state) { return ({ READY: '已生成，未执行', RUNNING: '执行中', PLANNING: '规划中', BINDING: '算子绑定', INTEGRATING: '拼装中', VALIDATING: '验证中', VERIFIED: '已验证', EXECUTED: '已执行', APPROVAL_REQUIRED: '待手动运行', RESOURCE_REQUIRED: '等待 API resource', REFUSED: '已拒绝', BLOCKED: '已阻断', QUEUED: '排队中' })[state] || state }
 function eventLabel(event) { return ({ 'workflow.state': '流程状态', 'agent.started': 'Agent 开始', 'agent.completed': 'Agent 完成', 'agent.failed': 'Agent 失败', 'tool.called': '工具调用', 'skill.invoked': 'Skill 调用', 'workflow.repair': '修复尝试', 'approval.granted': '审批通过' })[event] || event }
 function operatorName(step) { return step.operator || step.operator_name || '未绑定' }
@@ -80,9 +188,9 @@ onUnmounted(() => { clearInterval(timer); runStream?.close() })
 
 <template>
   <div class="app-shell"><header class="topbar"><div class="brand"><span class="brand-mark">DF</span><div><strong>DataFlow</strong><small>Multi-Codex Studio</small></div></div><div class="top-actions"><span class="connection"><i></i>{{ backendMode }} backend</span><button class="ghost" @click="showDataset = true">Datasets ({{ datasets.length }})</button><button class="ghost" @click="showResource = true">Serving / API ({{ resources.length }})</button><button class="ghost" @click="refreshRuns">Refresh</button></div></header>
-    <main class="workspace"><aside class="sidebar panel"><div class="panel-title"><span>Runs</span><span class="count">{{ runs.length }}</span></div><button v-for="run in runs" :key="run.run_id" class="run-item" :class="{ active: run.run_id === selectedId }" @click="selectRun(run.run_id)"><span class="run-dot" :class="run.state.toLowerCase()"></span><span class="run-copy"><b>{{ run.request || 'Untitled run' }}</b><small>{{ run.run_id }} · {{ labelState(run.state) }}</small></span><span class="run-delete" title="Delete run" @click.stop="deleteRun(run.run_id)">×</span></button><div v-if="!runs.length" class="empty">No runs yet</div></aside>
+    <main class="workspace"><aside class="sidebar panel"><div class="panel-title"><span>Runs</span><span class="count">{{ runs.length }}</span></div><div class="run-list" tabindex="0" role="region" aria-label="运行记录"><button v-for="run in runs" :key="run.run_id" class="run-item" :class="{ active: run.run_id === selectedId }" @click="selectRun(run.run_id)"><span class="run-dot" :class="run.state.toLowerCase()"></span><span class="run-copy"><b>{{ run.request || 'Untitled run' }}</b><small>{{ run.run_id }} · {{ labelState(run.state) }}</small></span><span class="run-delete" :aria-disabled="deletingRuns.has(run.run_id)" :title="deletingRuns.has(run.run_id) ? 'Deleting…' : 'Delete run'" @click.stop="deleteRun(run.run_id)">{{ deletingRuns.has(run.run_id) ? '…' : '×' }}</span></button><div v-if="!runs.length" class="empty">No runs yet</div></div></aside>
       <section class="center"><div class="hero panel"><div><span class="eyebrow">MULTI-AGENT PIPELINE BUILDER</span><h1>Turn intent into a verified DataFlow pipeline.</h1><p>Planner, operator specialists, integrator and verifier collaborate through one durable run.</p></div><div class="agent-strip"><span v-for="agent in agents" :key="agent[0]" class="agent-chip"><b>{{ agent[1][0] }}</b>{{ agent[1] }}</span></div></div>
-        <div class="panel conversation-panel"><div class="panel-title"><span>Conversation Controller</span><span class="live"><i></i>{{ conversation?.active_run_id || 'Ready' }}</span></div><div class="conversation-messages"><div v-for="item in conversationMessages.slice(-6)" :key="item.message_id" class="conversation-message" :class="item.role"><b>{{ item.role === 'user' ? 'You' : 'Codex Controller' }}</b><span>{{ item.content }}</span><small>{{ item.intent }} · revision {{ item.revision || 0 }}</small></div><div v-if="!conversationMessages.length" class="empty">Ask the controller to start a task, check progress, or revise the active run.</div></div><div class="conversation-compose"><input v-model="conversationInput" @keydown.enter="sendConversation" placeholder="继续对话：修改需求、询问进度或查看证据" /><button class="primary" :disabled="conversationBusy" @click="sendConversation">{{ conversationBusy ? 'Sending…' : 'Send' }}</button></div></div>
+        <div class="panel conversation-panel"><div class="panel-title"><span>DataFlow 助手</span><button class="ghost" :disabled="conversationBusy || newConversationBusy" @click="startNewConversation">{{ newConversationBusy ? '正在创建…' : '新对话' }}</button><span class="live"><i></i>{{ conversation?.active_run_id || 'Ready' }}</span></div><div class="conversation-messages"><div v-for="item in [...conversationMessages, ...liveControllerMessages].slice(-10)" :key="item.message_id" class="conversation-message" :class="item.role"><b>{{ item.role === 'user' ? 'You' : 'Codex Controller' }}</b><span>{{ item.content }}</span><small>{{ item.intent }} · revision {{ item.revision || 0 }}</small></div><div v-if="!conversationMessages.length && !liveControllerMessages.length" class="empty">从这里开始：描述数据任务，随后可继续追问进度或修改需求。</div></div><div class="conversation-compose"><input ref="composerInput" :disabled="newConversationBusy" v-model="conversationInput" @keydown.enter="sendConversation" placeholder="描述任务，或继续修改当前任务…" /><button class="primary" :disabled="conversationBusy || newConversationBusy || !conversationInput.trim()" @click="sendConversation">{{ conversationBusy ? 'Sending…' : 'Send' }}</button></div></div>
         <button v-if="selected?.pipeline" class="code-launch ghost" :disabled="codeBusy" @click="viewPipelineCode">{{ codeBusy ? 'Loading code...' : 'View Pipeline / Operator code' }}</button><div v-if="false" class="composer panel"><label>Describe your data task</label><textarea v-model="request" rows="2" placeholder="Describe a transformation..."></textarea><div class="dataset-row"><select v-model="selectedDatasetId" @change="selectDataset(selectedDatasetId)"><option value="">Inline JSON input</option><option v-for="item in datasets" :key="item.id" :value="item.id">{{ item.name }} ({{ item.rows }} rows)</option></select><button class="ghost" @click="showDataset = true">Register dataset</button><span v-if="selectedDatasetId" class="dataset-hint">Using first row as schema</span></div><textarea v-if="!selectedDatasetId" class="input-json" v-model="inputText" rows="3" placeholder="Input JSON rows"></textarea><div class="composer-bottom"><label class="toggle"><input type="checkbox" v-model="allowCustom" /> Allow new operators</label><button class="primary" :disabled="busy" @click="createRun">{{ busy ? 'Starting...' : 'Generate pipeline' }} <span>→</span></button></div></div>
         <div class="pipeline panel"><div class="section-head"><div><span class="eyebrow">PIPELINE GRAPH</span><h2>{{ selected?.request || 'Select a run to inspect its pipeline' }}</h2></div><div class="section-actions"><span v-if="selected" class="state-pill" :class="currentState.toLowerCase()">{{ labelState(currentState) }}</span><button v-if="selected?.pipeline && ['READY','VERIFIED','EXECUTED','APPROVAL_REQUIRED','RESOURCE_REQUIRED','BLOCKED'].includes(currentState)" class="ghost" :disabled="busy" @click="executePipeline">Run pipeline</button></div></div><div v-if="selected" class="progress"><span v-for="state in stateOrder" :key="state" :class="{ done: stateIndex >= stateOrder.indexOf(state), current: state === currentState }">{{ labelState(state) }}</span></div><div v-if="selected?.summary || selected?.latest_event" class="summary"><b>当前阶段</b><span>{{ selected.summary || `${eventLabel(selected.latest_event.event)} · ${selected.latest_event.agent}` }}</span></div><div v-if="selected?.reason" class="reason"><b>{{ currentState === 'REFUSED' ? 'Planner 拒绝原因' : currentState === 'RESOURCE_REQUIRED' ? 'API resource 配置' : '运行摘要' }}</b><span>{{ selected.reason }}</span><button v-if="currentState === 'RESOURCE_REQUIRED'" class="primary inline-action" @click="showResource = true">Configure resource</button></div><div v-if="steps.length" class="dag"><template v-for="(step, index) in steps" :key="step.step_id"><div class="dag-node"><span class="node-index">{{ String(index + 1).padStart(2, '0') }}</span><div><b>{{ operatorName(step) }}</b><small>{{ step.objective || step.step_id }}</small></div><span class="node-status">{{ step.risk || 'low' }}</span></div><div v-if="index < steps.length - 1" class="dag-link">↓</div></template></div><div v-else class="graph-empty">The integrator will render operator bindings here.</div></div>
         <div v-if="stages.length" class="panel stage-panel"><div class="panel-title"><span>Stage output review</span><span class="count">{{ stages.length }} stages</span></div><div class="stage-tabs"><button v-for="stage in stages" :key="stage.stage_id" :class="{ active: selectedStage?.stage_id === stage.stage_id }" @click="selectedStage = stage">{{ stage.index + 1 }} · {{ stage.name }} <small>{{ stage.row_count }} rows</small></button></div><div v-if="selectedStage" class="stage-meta"><b>{{ selectedStage.source }}</b><span>{{ selectedStage.fields.join(', ') }}</span></div><div class="table-scroll"><table><thead><tr><th v-for="field in selectedFields" :key="field">{{ field }}</th></tr></thead><tbody><tr v-for="(row, i) in selectedRows" :key="i"><td v-for="field in selectedFields" :key="field">{{ typeof row[field] === 'object' ? JSON.stringify(row[field]) : row[field] }}</td></tr></tbody></table><div v-if="!selectedRows.length" class="empty">No materialized rows yet.</div></div></div></section>

@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import threading
 import time
 import urllib.error
@@ -24,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import discover_operator_catalog, load_catalog, search_catalog
-from .compiler import render_dataflow_pipeline
+from .compiler import render_dataflow_pipeline, normalize_operator_defaults
 from .serving import normalize_chat_url
 from .execution import approve, execute
 from .identities import IDENTITIES
@@ -147,11 +148,11 @@ def _stage_snapshots(root: Path, limit: int = 30) -> list[dict[str, Any]]:
     return result
 
 
-def _safe_run(config: dict[str, Any], run_id: str) -> Path:
+def _safe_run(config: dict[str, Any], run_id: str, *, allow_missing: bool = False) -> Path:
     root = (Path(config["runs_root"]).resolve() / run_id).resolve()
     if root.parent != Path(config["runs_root"]).resolve() or not root.name.startswith("run-"):
         raise HTTPException(status_code=400, detail="Invalid run id")
-    if not root.is_dir():
+    if not root.is_dir() and not allow_missing:
         raise HTTPException(status_code=404, detail="Run not found")
     return root
 
@@ -167,13 +168,31 @@ def _events(root: Path) -> list[dict[str, Any]]:
     # SQLite is the live join authority; events.jsonl is the durable export.
     db = root / "team.sqlite"
     if db.exists():
-        with TeamStore(root).connect() as conn:
-            rows = conn.execute("SELECT seq,timestamp,kind,role,job,detail FROM events ORDER BY seq").fetchall()
+        try:
+            # Readers must not recreate a run while it is being deleted.
+            with sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True) as conn:
+                rows = conn.execute("SELECT seq,timestamp,kind,role,job,detail FROM events ORDER BY seq").fetchall()
+        except sqlite3.OperationalError:
+            if not db.exists():
+                return []
+            raise
         return [{"seq": seq, "timestamp": timestamp, "event": kind, "agent": role,
                  "job": job, "trace_id": root.name, **json.loads(detail)}
                 for seq, timestamp, kind, role, job, detail in rows]
     path = root / "events.jsonl"
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()] if path.exists() else []
+    try:
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except FileNotFoundError:
+        return []
+
+
+def _remove_run_tree(root: Path) -> None:
+    def onerror(function, path, exc_info):
+        # Python 3.10–3.12 rmtree can fail when a scanned child disappears.
+        # Missing children are already removed; permission/IO errors are real.
+        if not isinstance(exc_info[1], FileNotFoundError):
+            raise exc_info[1]
+    shutil.rmtree(root, onerror=onerror)
 
 
 def _run_summary(root: Path) -> dict[str, Any]:
@@ -221,6 +240,7 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
     runs_root = Path(cfg["runs_root"]).resolve()
     runs_root.mkdir(parents=True, exist_ok=True)
     conversation_store = ConversationStore(runs_root)
+    deletion_lock = threading.Lock()
     workers = max(1, int(cfg.get("api_workers", 4)))
     executor = __import__("concurrent.futures", fromlist=["ThreadPoolExecutor"]).ThreadPoolExecutor(max_workers=workers)
     app = FastAPI(title="DataFlow Multi-Codex", version="1.0.0")
@@ -497,14 +517,24 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
 
     @app.delete("/api/v1/runs/{run_id}")
     def delete_run(run_id: str):
-        root = _safe_run(cfg, run_id)
-        state = (_read_json(root / "status.json", {}) or {}).get("state")
-        if state not in TERMINAL_STATES and (root / ".leader.lock").exists():
-            raise HTTPException(status_code=409, detail="Running runs cannot be deleted")
-        shutil.rmtree(root)
-        input_path = runs_root / ".api-inputs" / f"{run_id}.jsonl"
-        if input_path.exists():
-            input_path.unlink()
+        with deletion_lock:
+            root = _safe_run(cfg, run_id, allow_missing=True)
+            try:
+                if root.exists():
+                    state = (_read_json(root / "status.json", {}) or {}).get("state")
+                    if state and state not in TERMINAL_STATES:
+                        raise HTTPException(status_code=409, detail="Running or queued runs cannot be deleted")
+                    if not state and not (root / ".leader.lock").exists():
+                        raise HTTPException(status_code=409, detail="Run is initializing; try again after it finishes")
+                    with (root / ".leader.lock").open("a") as lock:
+                        try:
+                            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            raise HTTPException(status_code=409, detail="Run is still busy; try again after it finishes")
+                        _remove_run_tree(root)
+                (runs_root / ".api-inputs" / f"{run_id}.jsonl").unlink(missing_ok=True)
+            except OSError as exc:
+                raise HTTPException(status_code=409, detail="Could not finish removing run files; check filesystem permissions and retry") from exc
         return {"deleted": run_id}
 
     @app.post("/api/v1/runs")
@@ -636,6 +666,9 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
             cursor = after
             idle = 0
             while idle < 300:
+                if not root.is_dir():
+                    yield 'event: done\ndata: {"state":"DELETED"}\n\n'
+                    return
                 events = [event for event in _events(root) if event.get("seq", 0) > cursor]
                 for event in events:
                     cursor = max(cursor, event.get("seq", cursor))
@@ -736,7 +769,7 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
             store = TeamStore(root)
             try:
                 # Bind the latest serving configuration without re-planning.
-                spec = _read_json(root / "pipeline-spec.json")
+                spec = normalize_operator_defaults(_read_json(root / "pipeline-spec.json"))
                 for name in spec.get("resources", {}):
                     if name in cfg.get("resources", {}):
                         spec["resources"][name] = cfg["resources"][name]

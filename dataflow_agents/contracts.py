@@ -34,3 +34,10 @@ Filtering semantics must match the selected DataFlow operator. A filter that ret
 PROMPTS["operator_specialist"] += """ Bound only your assigned step, not the whole user request. If the catalog seems incomplete, examine the capability names before proposing an operator. Whitespace cleaning should reuse RemoveExtraSpacesRefiner with prepare_fields; exact dedup should reuse HashDeduplicateFilter. Do not generate code for copying or final projection, which the compiler already handles."""
 PROMPTS["planner"] += """ Named resources are supplied separately. If a task needs an LLM/model/database resource, still produce the complete source-grounded plan and bind the operator with a named $resource placeholder even when resources is empty. Missing resource registration is an execution/configuration prerequisite, not proof that the DataFlow pipeline is unsupported. Set supported=false only when the catalog and an allowed custom operator cannot express the transformation."""
 PROMPTS["operator_specialist"] += """ init_args may use {\"$resource\":\"name\"} as a serving reference whether or not that name is registered yet. The compiler keeps the reference in the pipeline spec and the executor resolves it only after the WebUI serving registry is configured. Never put credentials in args or source."""
+
+for role in ("operator_specialist", "pipeline_integrator"):
+    PROMPTS[role] += """ For ReasoningQuestionFilter, ReasoningQuestionGenerator and ReasoningAnswerGenerator,
+use prompt_template=null for the default math prompt. For an explicit template use
+{"$prompt":"GeneralQuestionFilterPrompt","args":{}} (choose the matching allowed class from source).
+For a Diy prompt, args must contain {"prompt_template":"your intended text"}.
+Never pass Python class names or constructor expressions as plain strings, and never invent a template class."""

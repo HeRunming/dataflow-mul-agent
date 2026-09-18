@@ -1,116 +1,208 @@
-# DataFlow 多 Codex Agent Pipeline 编排器
+<div align="center">
 
-将自然语言企业任务编译为可验证、可回滚的 DataFlow Pipeline。项目运行目录为 `/Users/blackbox/dataflow-mul-agents`，事实来源为 `/Users/blackbox/DataFlow`。
+# DataFlow Multi-Agent Workbench
 
-## 快速运行
+**用自然语言编排 DataFlow Pipeline，让生成过程、算子来源和执行证据可追溯。**
+
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![DataFlow](https://img.shields.io/badge/DataFlow-1.0.10-167D8D)](https://github.com/OpenDCAI/DataFlow)
+[![Frontend](https://img.shields.io/badge/Vue-3%20%2B%20Vite-42B883?logo=vuedotjs&logoColor=white)](frontend/package.json)
+[![Status](https://img.shields.io/badge/Status-local%20workbench-E5A33D)](#当前范围与限制)
+
+[快速开始](#快速开始) · [协作架构](#协作架构) · [Agent 与 Skills](#agent-与-skills) · [运行证据](#运行证据与展示) · [配置与 API](docs/workbench-reference.md)
+
+</div>
+
+---
+
+这个工作台将自然语言需求转换为声明式 Pipeline spec，再生成可以由 DataFlow 编译和执行的 Python 代码。Planner 拆解任务，多个 Operator Specialist 并行检索真实算子源码，Integrator 对齐字段和参数；独立的 Evidence Verifier 用于显式启用自动执行的流程。
+
+前端提供统一对话入口、Agent 活动、Skill 调用记录、Pipeline / Operator 完整源码预览和逐阶段输出。每个 Run 保留输入快照、角色输出、事件和版本信息，便于调试与复核。
+
+> **生成、执行、验证是三个不同的结果。** 默认 Web 流程生成到 `READY`；点击 **Run pipeline** 后实际执行，成功为 `EXECUTED`。只有独立 Verifier 通过的流程才是 `VERIFIED`。
+
+## 核心能力
+
+| 能力 | 当前实现 |
+| --- | --- |
+| 多角色协作 | Codex 模式下，每次角色调用启动独立 `codex exec` 进程；Specialist 按步骤并行，Integrator 等待汇合 |
+| 基于源码的算子选择 | AST 提取 DataFlow 注册算子、参数签名与源码 hash，优先复用已有算子 |
+| 生成与运行分离 | 先静态检查 spec，再由用户显式启动 DataFlow 编译与执行 |
+| 代码与数据审阅 | Pipeline / Operator 双标签、源码变更提示、每阶段 JSONL 输出表格 |
+| 可观察的工作流 | SQLite jobs/events、Run SSE、角色输出、Skill 元数据、运行报告与文件 hash |
+| 对话工作台 | 新对话、进度查询、基础需求修改；阶段消息仅在对话框展示 |
+| 故障定位 | 有界重试、超时诊断、Codex 传输日志；删除操作处理重复请求和临时文件清理竞争 |
+| 展示材料导出 | 本地 HTML、时间线 CSV、角色轨迹、Skill 版本与脱敏证据 ZIP |
+
+## 协作架构
+
+```mermaid
+flowchart TD
+    U[用户：需求、数据、反馈] --> C[Conversation Controller · 规则路由]
+    C --> O[Orchestrator · 持久化 Run]
+    O --> P[Planner · 任务拆解]
+    P --> S1[Operator Specialist · 步骤 1]
+    P --> S2[Operator Specialist · 步骤 2 … N]
+    S1 --> I[Pipeline Integrator · 字段与参数对齐]
+    S2 --> I
+    I --> G[声明式 spec / 静态检查 / pipeline.py]
+    G --> R[READY · 已生成]
+    R -->|Web：点击 Run pipeline| X[DataFlow compile + execute]
+    X --> E[EXECUTED · 运行报告与输出]
+    G -->|非 Web：auto_execute=true| A[资源与审批检查 / compile + execute]
+    A --> V[Evidence Verifier]
+    V -->|通过| F[VERIFIED · 可晋级]
+    O -.事件、角色输出、hash.-> W[WebUI / 本地证据包]
+```
+
+失败或缺少资源会进入 `BLOCKED`、`RESOURCE_REQUIRED` 等状态，不会因 Agent 声称成功而覆盖机器执行错误。核心实现见 [Orchestrator](dataflow_agents/orchestrator.py)、[任务与事件存储](dataflow_agents/team.py) 和 [编译器](dataflow_agents/compiler.py)。
+
+## 快速开始
+
+### 1. 安装依赖
+
+建议使用 **Python 3.12**、**Node.js 20.19+ 或 22.12+** 和 `uv`。项目声明支持 Python ≥3.10；当前本地验证使用 Python 3.12。DataFlow 的基础依赖较多，首次安装需要一定时间。
+
+以下采用相邻仓库目录，和默认配置中的 `../DataFlow` 保持一致：
 
 ```bash
-cd /Users/blackbox/dataflow-mul-agents
-python3.12 -m venv .venv  # DataFlow requires Python >=3.10
-uv pip install --python .venv/bin/python -r requirements-local.txt
+git clone https://github.com/OpenDCAI/DataFlow.git
+git -C DataFlow checkout 19542dc0616dacc64f9e9ea0dcfd175622ac4166
+git clone https://github.com/HeRunming/dataflow-mul-agent.git
+cd dataflow-mul-agent
+
+python3.12 -m venv .venv
+.venv/bin/python -m pip install uv
+.venv/bin/uv pip install --python .venv/bin/python -r requirements-local.txt
 .venv/bin/python -m pip check
 
-# 离线生成示例，不调用模型，不执行 pipeline
-.venv/bin/python -m dataflow_agents.cli run "清洗 raw_content 的多余空格，按清洗内容精确去重，输出 cleaned_content" --backend offline
-
-# 同步 DataFlow 的真实注册算子和源码签名
-.venv/bin/python -m dataflow_agents.cli catalog
+npm ci --prefix frontend
+npm run build --prefix frontend
 ```
 
-每次生成创建 `runs/run-*` 目录，保存请求快照、catalog 版本、planner/specialist/integrator 的输入输出、SQLite 状态、JSONL 事件、Trace、Metrics、静态校验和 Pipeline 源码。默认结束于 `READY`（已生成，未执行）；运行报告和输出数据仅在实际执行后产生。
+`requirements-local.txt` 将相邻 DataFlow checkout 和本项目一起解析安装；`pyproject.toml` 要求 `open-dataflow==1.0.10`。上述命令固定到本轮验证的 DataFlow 提交 [`19542dc`](https://github.com/OpenDCAI/DataFlow/commit/19542dc0616dacc64f9e9ea0dcfd175622ac4166)，避免上游分支更新引入版本差异；这不是跨平台依赖锁文件。
 
-## 依赖与本地环境
+如果 DataFlow 位于其他目录，请同步修改 editable 安装路径和 `DATAFLOW_ROOT`，使索引、源码预览和执行指向同一 checkout。不要用 `--no-deps` 或仅设置 `PYTHONPATH` 替代安装。模型权重、CUDA/vLLM 等可选组件按选用算子另行配置。
 
-使用 Python 3.12 和 `uv`（`python3.12 -m pip install uv`）。默认 `requirements-local.txt` 在同一次解析中安装本项目的 Web/test extras 和 `../DataFlow` 的 editable 包，包含 DataFlow 的完整基础 requirements；不要使用 `--no-deps` 跳过依赖。`pyproject.toml` 明确依赖 `open-dataflow==1.0.10`（导入名为 `dataflow`），其依赖包含 rapidfuzz、NumPy、PyArrow、模型与云服务库。仅设置 `PYTHONPATH` 不算安装 DataFlow。
+### 2. 先试离线模式
 
-上游 DataFlow 的基础 requirements 本身包含完整运行依赖；`uv` 会在一次解析中解决版本组合并避免 pip 的长时间回溯。生产环境应在目标平台重新解析并保存自己的 lock/constraints，而不要把某台机器的包快照当作通用锁文件。DataFlow 源码目录由 `config/runtime.json` 的 `dataflow_root` 或 `DATAFLOW_ROOT` 指定；换目录时，同时修改 `requirements-local.txt` 的 editable 路径，让索引、预览和执行使用同一个 checkout。执行器默认复用启动后端的 Python 解释器，所以请通过 `.venv/bin/dataflow-agents-web` 启动。
-
-验证安装：
+无需模型密钥即可验证清洗、大小写转换和精确去重的有限示例：
 
 ```bash
-.venv/bin/python -m pip check
-.venv/bin/python -c "import dataflow, rapidfuzz; from dataflow.pipeline import PipelineABC; from dataflow.serving import APILLMServing_request; print(dataflow.__version__, dataflow.__file__)"
-.venv/bin/python -m unittest discover -s tests -v
+CODEX_BACKEND=offline .venv/bin/dataflow-agents-web
 ```
 
-DataFlow 的 CUDA/vLLM、MinerU 等具名 extras、模型权重、外部 API 密钥仍按选用的算子配置；本地安装覆盖上游完整基础依赖，不会自动下载模型或调用外部服务。
+打开 **<http://127.0.0.1:8000/>**，在 DataFlow 助手输入：
 
-## 真实 Codex
+> 清洗 raw_content 的多余空格，按清洗结果精确去重，输出 cleaned_content。
 
-API key 只通过进程环境传递，不写入配置或证据。使用自定义 provider 时，Codex 官方配置支持用 `model_providers.<id>.env_key` 指定 bearer token 环境变量；本实现将它限制为 `DF_CODEX_API_KEY`，并将每个 Agent 放在独立的 ephemeral Codex 进程中。
+生成后查看 Pipeline / Operator 代码，再点击 **Run pipeline**。离线模式是确定性测试后端，不是模型推理；任意需求请使用 Codex 模式。
+
+也可通过 CLI 使用仓库示例数据：
 
 ```bash
-export DF_CODEX_API_KEY='...'
-export DF_CODEX_BASE_URL='https://api.zcloudapi.com/v1'
-.venv/bin/python -m dataflow_agents.cli run "清洗 raw_content，按清洗结果去重并输出 cleaned_content" --backend codex
+.venv/bin/python -m dataflow_agents.cli run \
+  "清洗 raw_content 的多余空格，按清洗结果精确去重，输出 cleaned_content" \
+  --backend offline --input examples/input.jsonl
 ```
 
-Codex 输出必须是符合 `dataflow_agents/contracts.py` JSON Schema 的最终消息；JSONL 事件会保存为证据，模型没有合法最终 JSON、超时或 schema 校验失败会重试一次，随后 `BLOCKED`。
+### 3. 启用 Codex 模式
 
-## 生成、执行和回滚
-
-默认只生成并静态检查 pipeline，不运行算子、不调用 pipeline 的模型服务，也不请求人工审批。Codex Agent 仍会调用模型来完成规划和代码生成。WebUI 中点击 `Run pipeline` 才执行已生成的 pipeline，这次点击就是执行确认，不再二次审批。保存 API resource 不会自动运行或恢复任务。`READY` 不表示经过运行验证，手动执行成功显示 `EXECUTED`。
-
-非 Web 调用方可显式设置 `auto_execute: true` 启用旧的执行和 Verifier 流程，该模式仍对新算子和外部资源保留审批检查。历史审批、晋级和回滚命令仍可使用；只有通过 Verifier 的 `VERIFIED` 结果可以晋级：
+安装并确认 `codex` CLI 可用。当前适配器使用 `exec --json --ephemeral`，以及 `--ignore-user-config`、`--ignore-rules` 等选项；CLI 版本须支持这些选项。可执行路径由 `CODEX_BIN` 指定。
 
 ```bash
-.venv/bin/python -m dataflow_agents.cli approve runs/run-...
-.venv/bin/python -m dataflow_agents.cli resume runs/run-...
-.venv/bin/python -m dataflow_agents.cli promote runs/run-... --deployment deployments/production
-.venv/bin/python -m dataflow_agents.cli rollback --deployment deployments/production
+export DF_CODEX_API_KEY='<your-api-key>'
+export DF_CODEX_BASE_URL='https://your-provider.example/v1'
+export CODEX_MODEL='<model-supported-by-your-provider>'
+CODEX_BACKEND=codex .venv/bin/dataflow-agents-web
 ```
 
-批准与 `pipeline.py`、spec、custom source、输入快照的 SHA-256 manifest 绑定，任何修改都会使批准失效。执行器是带资源继承过滤、超时和独立进程的本地控制平面，不等同于容器或内核沙箱；生产部署应把它放进容器、Job 或受控 runner。
+Provider 需要兼容 **Responses API**。以上占位值需替换；启动命令在当前终端前台运行，关闭终端会停止服务。API key 从服务进程环境继承，重启时也需要保留环境。该流程不依赖 Codex 交互登录态。
 
-## 设计和提交材料
+**Codex 编排模型与 Pipeline Serving 是两套配置。** Pipeline 中的 LLM 算子通过工作台 **Serving / API** 注册 Chat Completions 服务，可设置模型、并发度、最大输出 tokens 和 temperature。`DF_CODEX_API_KEY` 不会自动作为 Pipeline 的服务密钥。
 
-- [docs/architecture.md](docs/architecture.md)：端到端 Codex workflow、状态机、RAG、MCP、观测和安全边界
-- [docs/agent-identities.md](docs/agent-identities.md)：四个 Agent Identity 清单
-- [docs/submission.md](docs/submission.md)：可直接提交的赛题逐项说明
-- `.agents/skills/`：`pipeline-planning`、`operator-discovery`、`operator-scaffolding`、`schema-alignment`、`verification-evidence`
-- `dataflow_agents/mcp_contract.py`：stdio MCP 协议实现和工具契约
+## 如何使用工作台
 
-## Web 工作台
+1. **开始需求**：从 DataFlow 助手发送请求。点击 **新对话** 创建独立上下文；已有 Run 继续保留。
+2. **观察生成**：查看阶段播报、角色状态、Skill 调用和失败事件。Runs 列表独立滚动，支持选择历史任务。
+3. **审阅代码**：检查完整 Pipeline 和各步骤 Operator 源码。源码缺失或 hash 变化会提示。
+4. **显式执行**：配置需要的 Serving 后点击 **Run pipeline**，查看状态、报错和 Stage output review。
+5. **继续反馈**：可询问进度或提出修改；当前 revision 会新建 Run，而不会覆盖父 Run。建议发送完整修改后的需求，避免依赖尚未实现的复杂上下文推理。
 
-WebUI 使用本项目的多 Codex Orchestrator 作为唯一 pipeline 生成后端，提供运行列表、实时 Agent 事件、pipeline DAG、手动执行和各阶段输出预览，不调用参考仓库中的旧单 Agent/MCP workflow。
+当前助手提交的是页面持有的输入行。若需要精确指定 JSON 数据或完整注册数据集，使用 [Run API 示例](docs/workbench-reference.md#指定输入数据)；不要把数据集预览样本误当成完整数据集提交。
 
-```bash
-uv pip install --python .venv/bin/python -r requirements-local.txt
-cd frontend && npm install && npm run build && cd ..
-DF_CODEX_API_KEY=... CODEX_BACKEND=codex .venv/bin/dataflow-agents-web
-```
+## Agent 与 Skills
 
-打开 <http://127.0.0.1:8000/>。开发模式可在 `frontend/` 运行 `npm run dev`，Vite 会将 `/api` 转发到 `127.0.0.1:8000`。`DF_CODEX_API_KEY` 只在后端进程环境中读取，不会进入前端或 run artifact。主要接口包括 `POST /api/v1/runs`、`GET /api/v1/runs/{run_id}`、`GET /api/v1/runs/{run_id}/stream`、`POST /api/v1/runs/{run_id}/execute`，以及真实 DataFlow 算子目录查询接口。
+| Agent | 主要职责 | 项目 Skill |
+| --- | --- | --- |
+| Planner | 拆解步骤、依赖与目标字段，判断支持范围 | [pipeline-planning](.agents/skills/pipeline-planning/SKILL.md) |
+| Operator Specialist | 检索算子源码、选择参数、绑定单个步骤 | [operator-discovery](.agents/skills/operator-discovery/SKILL.md) |
+| Operator Specialist | 缺少匹配算子时生成自定义源码与 fixtures | [operator-scaffolding](.agents/skills/operator-scaffolding/SKILL.md) |
+| Pipeline Integrator | 汇合绑定、对齐 schema、修复静态冲突 | [schema-alignment](.agents/skills/schema-alignment/SKILL.md) |
+| Evidence Verifier | 检查真实运行证据与需求符合程度 | [verification-evidence](.agents/skills/verification-evidence/SKILL.md) |
 
-运行阶段默认超时为 900 秒（15 分钟），适合较复杂或较大数据量的 pipeline；可在 `config/runtime.json` 的 `runtime_timeout_seconds` 中调整。该限制只作用于用户手动启动的 DataFlow 执行子进程。
+这里的 Skill 是本仓库维护的 `SKILL.md` 指令，由后端读取并加入对应角色的提示。`skill.invoked` 是**编排器审计事件**，并非 Codex 原生 Skill 工具的独立回执；工具边界事件也应按其实际来源解读。
 
-LLM/API 算子不要求在生成 pipeline 之前完成 resource 注册。Planner 和 compiler 会保留 `$resource` 占位符，先生成并校验 pipeline spec；手动执行时若 resource 尚未注册或密钥缺失，run 进入 `RESOURCE_REQUIRED`。可在 WebUI 的 API resources 面板注册后点击 `Run pipeline`，执行时会绑定最新配置，无需重新规划。resource 定义持久化在 `config/resources.json`，密钥从服务端环境或 secret registry 读取。
+调用次数按事件统计。重试、缓存命中和 Skill 事件并不是一一对应关系；自定义算子 Skill 的记录点在源码落盘。要核查历史版本，请查看角色输入中的 `provenance.skills`，不要仅依赖界面上当前工作树的 hash。
 
-Serving 与算子绑定保持独立：pipeline 只保存稳定的 `$resource` 引用，`/api/v1/servings`（兼容别名 `/api/v1/resources`）负责维护 API 配置，`/api/v1/servings/classes` 返回 `APILLMServing_request` 的表单元数据。未被当前 pipeline 引用的 serving 不会阻塞本次执行。
-
-WebUI 还提供 `/api/v1/models`（以及 serving/resources 别名）用于向 API 的 `/models` 或 `/model` 端点发现模型；API key 可在 serving 表单中填写，后端保存到被 `.gitignore` 排除且权限为 0600 的 secret registry，执行时才注入子进程环境。数据集可通过 `/api/v1/datasets` 注册、预览、切换和删除；`POST /api/v1/runs` 支持 `dataset_id`，会使用数据集样本和完整数据集生成输入快照。已有 pipeline 可通过 `POST /api/v1/runs/{run_id}/execute` 直接执行，`GET /api/v1/runs/{run_id}/stages` 展示每个 DataFlow cache 阶段的真实输出。
-
-### Multi-Turn Conversation Workbench
-
-工作台顶部的 **Conversation Controller** 支持在同一会话中连续提出新任务、查询进度、查看证据和修改需求。Controller 只负责结构化路由，实际规划、算子绑定、Pipeline 拼装和验证仍由四个执行 Agent 完成；修改需求会创建新的 revision/Run，旧 Run 保留用于审计和对比。右侧 Agent activity 通过 Run SSE 实时更新，展示 Agent、Skill、工具调用和验证事件。
-
-会话 API：
+## 运行证据与展示
 
 ```text
-POST /api/v1/conversations
-GET  /api/v1/conversations/{conversation_id}
-POST /api/v1/conversations/{conversation_id}/messages
-GET  /api/v1/conversations/{conversation_id}/stream
+runs/run-…/
+├── request.json / input.jsonl          # 请求与输入快照
+├── team.sqlite / events.jsonl          # 任务状态与事件
+├── agents/<job>/<attempt>/            # 角色输入、输出、Codex 轨迹、传输诊断
+├── plan.json / bindings.json          # 规划与算子绑定
+├── pipeline-spec.json / pipeline.py   # 声明式契约与可执行代码
+├── static-validation.json            # 生成阶段静态检查
+├── runtime-report.json / output.jsonl # 实际执行后才产生
+└── verification.json / integrity.json # 取决于是否运行独立验证流程
 ```
 
-详细设计和后续增量复用路线见 [docs/multi_turn_agent_workbench_plan.md](docs/multi_turn_agent_workbench_plan.md)。
-
-代码预览入口为 **View Pipeline / Operator code**。Pipeline 标签显示当前 run 的完整 `pipeline.py`；Operator 标签按最终 `pipeline-spec.json` 的步骤选择算子，已有算子读取 DataFlow 源文件，自定义算子读取 run 下的 `custom/*.py`。预览不会执行源码，文件缺失或与生成时哈希不一致会明确提示。接口为 `GET /api/v1/runs/{run_id}/pipeline-code`，保留原有 `code` 字段，并返回含 step id、文件名、来源、完整代码和状态的 `operators` 数组。
-
-## 验证
+对你自己的 Run 导出本地展示材料：
 
 ```bash
-.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python scripts/export_demo_evidence.py --runs run-<your-run-id>
 ```
 
-测试覆盖真实 DataFlow compile/execute、完整字段契约、DAG 循环、Codex JSONL 解析、MCP schema、经验记忆、失败恢复、自定义 operator fixture、审批哈希、发布和回滚。
+导出内容包含 HTML 时间线、CSV、Skill 事件与版本、结构化角色输出、日志摘录和 hash 清单。`runs/` 与本地凭据配置均被 Git 忽略，不随代码发布。导出会脱敏常见凭据，但业务内容仍可能出现在 plan 和角色输出中；分享前应检查内容。
+
+本地调试中已有“4 步生成 + 实际执行输出 9 行”的案例，但这只证明该次运行通过；不能据此推断通用准确率、生产可靠性或效率提升百分比。`EXECUTED` 也不代表已经获得独立 Verifier 的语义认可。
+
+## 验证与维护
+
+```bash
+.venv/bin/python -m pip check
+.venv/bin/python -m unittest discover -s tests -v
+npm ci --prefix frontend
+npm run build --prefix frontend
+git diff --check
+```
+
+测试覆盖真实 DataFlow 编译/执行、字段契约、Prompt 实例化、Serving 错误、Codex 超时、代码预览边界、删除竞争、证据脱敏和审批完整性。Prompt 测试使用真实算子与本地模型响应替身，不调用外部计费接口。
+
+当前修复还包含：新对话隔离旧事件与延迟请求、Runs 滚动、重复删除保护、超时日志保存，以及三类 Reasoning 算子的模板实例适配。详见 [配置、排障与 API 参考](docs/workbench-reference.md)。
+
+## 当前范围与限制
+
+- **Controller 为 MVP**：使用关键字路由和模板回复，尚未实现独立顶层 Codex 推理代理；阶段播报来自真实事件，但不是模型生成的语义摘要。
+- **Revision 完整重跑**：保留父 Run 引用和原输入，不提供跨 Run 增量复用、完善的 diff / 回滚界面或可靠的复杂需求合并。
+- **生成代码是通用执行器**：spec 多行展示，运行时按步骤构造 Operator；尚未生成与 DataFlow 手写示例完全一致的逐算子显式类结构。
+- **实时能力以 Run SSE 为主**：前端有轮询回退；Conversation SSE 仍是实验接口，尚无完整的恢复游标保证。会话保存在本地 JSON，非多进程事务存储。
+- **数据与历史交互仍有限**：Runs API 当前最多返回 100 条，没有分页；前端尚无完整历史会话切换与 revision 对比。
+- **本地运行边界**：服务默认绑定 localhost，无应用级鉴权；本地子进程不等同于容器沙箱。生产部署需要额外的身份校验、执行隔离与密钥管理。
+
+## 文档与代码导航
+
+| 位置 | 内容 |
+| --- | --- |
+| [配置与 API 参考](docs/workbench-reference.md) | 密钥边界、执行状态、Prompt 参数、故障排查与接口 |
+| [架构说明](docs/architecture.md) | 编排、存储、执行和证据设计 |
+| [Agent 身份](docs/agent-identities.md) | 角色输入输出和边界 |
+| [工作台计划](docs/multi_turn_agent_workbench_plan.md) | 设计目标与后续路线；不代表全部能力已交付 |
+| [dataflow_agents/](dataflow_agents/) | Orchestrator、Codex transport、编译器、Web API |
+| [frontend/](frontend/) | Vue 3 工作台 |
+| [tests/](tests/) | 后端回归测试 |
+| [scripts/](scripts/) | 本地运行证据导出 |
+
+基于 [OpenDCAI/DataFlow](https://github.com/OpenDCAI/DataFlow)，界面设计参考 [DataFlow-WebUI](https://github.com/OpenDCAI/DataFlow-WebUI)。本仓库目前尚未附带 LICENSE；上游项目及依赖的许可分别以其仓库声明为准。

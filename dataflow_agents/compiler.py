@@ -4,7 +4,9 @@ import ast
 import json
 import inspect
 import pprint
+import copy
 from .serving import normalize_chat_url
+from .prompt_templates import PROMPT_CLASSES, OPERATOR_PROMPTS, normalize_prompt, instantiate_prompt
 from .catalog import extract_source
 
 def fields(value):
@@ -55,6 +57,17 @@ def _walk_refs(value):
     elif isinstance(value, list):
         for item in value:
             yield from _walk_refs(item)
+
+
+def normalize_operator_defaults(spec):
+    """Normalize registered reasoning prompt defaults/references without mutation."""
+    normalized = copy.deepcopy(spec)
+    for step in normalized.get("steps", []):
+        operator = step.get("operator")
+        if operator in OPERATOR_PROMPTS and not step.get("proposal"):
+            args = step.setdefault("init_args", {})
+            args["prompt_template"] = normalize_prompt(operator, args.get("prompt_template"))
+    return normalized
 
 def compile_spec(plan, integrated, catalog, initial_keys, resources=None):
     index = {o["name"]:o for o in catalog}
@@ -174,7 +187,7 @@ def compile_spec(plan, integrated, catalog, initial_keys, resources=None):
     refs = sorted({value[next(iter(value))] for step in steps for value in _walk_refs(step["init_args"])})
     spec = {"api_version":"dataflow.agents/v2", "steps":steps, "final_keys":final, "initial_keys":initial_keys,
             "resources":resources, "servings": {name: resources[name] for name in refs}}
-    return spec, errors
+    return normalize_operator_defaults(spec), errors
 
 RUNTIME_SOURCE = r'''
 import argparse
@@ -244,6 +257,12 @@ def resolve(value):
         return [resolve(item) for item in value]
     return value
 
+def build_operator(step):
+    args = dict(step["init_args"])
+    if step["operator"] in OPERATOR_PROMPTS and not step.get("proposal"):
+        args["prompt_template"] = instantiate_prompt(step["operator"], args.get("prompt_template"))
+    return OPERATOR_REGISTRY.get(step["operator"])(**resolve(args))
+
 class GeneratedPipeline(PipelineABC):
     def __init__(self, input_file, cache):
         super().__init__()
@@ -256,7 +275,7 @@ class GeneratedPipeline(PipelineABC):
                 setattr(self, attr, CopyField())
                 self.calls.append((attr, {"input_key":source, "output_key":target}))
             attr = f"op_{index}"
-            setattr(self, attr, OPERATOR_REGISTRY.get(step["operator"])(**resolve(step["init_args"])))
+            setattr(self, attr, build_operator(step))
             self.calls.append((attr, step["run_args"]))
 
     def forward(self):
@@ -280,7 +299,7 @@ def self_test(cache):
             input_file = directory / "input.jsonl"
             input_file.write_text("".join(json.dumps(row, ensure_ascii=False)+"\n" for row in fixture["input"]), encoding="utf-8")
             storage = FileStorage(first_entry_file_name=str(input_file), cache_path=str(directory), cache_type="jsonl")
-            operator = OPERATOR_REGISTRY.get(step["operator"])(**resolve(step["init_args"]))
+            operator = build_operator(step)
             stage = storage.step()
             operator.run(storage=stage, **step["run_args"])
             actual = json.loads(stage.step().read("dataframe").to_json(orient="records"))
@@ -345,13 +364,17 @@ def render_dataflow_pipeline(spec, **kwargs):
     # declarative pipeline metadata, small operator wiring class, and an
     # explicit forward method.  The metadata is pretty-printed so reviewers
     # can inspect fields and operator arguments without one unreadable line.
-    normalized = json.loads(json.dumps(spec, sort_keys=True))
+    normalized = json.loads(json.dumps(normalize_operator_defaults(spec), sort_keys=True))
     spec_text = pprint.pformat(normalized, width=100, sort_dicts=False)
     source = ("\"\"\"Generated DataFlow pipeline.\n"
               "This file is produced from a validated pipeline spec; edit the spec or agents, then regenerate.\n"
               "\"\"\"\n\n"
               "SPEC = " + spec_text + "\n\n"
-              "from urllib.parse import urlsplit, urlunsplit\n\n" + inspect.getsource(normalize_chat_url) + "\n" + RUNTIME_SOURCE)
+              "from urllib.parse import urlsplit, urlunsplit\n\n" + inspect.getsource(normalize_chat_url) + "\n"
+              + "PROMPT_CLASSES = " + pprint.pformat(PROMPT_CLASSES) + "\n"
+              + "OPERATOR_PROMPTS = " + pprint.pformat(OPERATOR_PROMPTS) + "\n\n"
+              + inspect.getsource(normalize_prompt) + "\n"
+              + inspect.getsource(instantiate_prompt) + "\n" + RUNTIME_SOURCE)
     ast.parse(source)
     return source
 

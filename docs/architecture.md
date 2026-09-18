@@ -2,7 +2,7 @@
 
 ## 目标边界
 
-控制平面把告警、工单、日志、账单、安全事件或自然语言数据处理请求转成可执行的 DataFlow `PipelineABC`。`/Users/blackbox/DataFlow` 是唯一运行时事实来源；本项目用 AST 同步 `@OPERATOR_REGISTRY.register()`、构造函数和 `run(storage,input_*,output_*)` 签名，不导入所有可选模型依赖。每次 run 固定 catalog/source hash，防止上游变更后继续执行旧计划。
+控制平面把告警、工单、日志、账单、安全事件或自然语言数据处理请求转成可执行的 DataFlow `PipelineABC`。配置中的 `dataflow_root` checkout 是运行时事实来源；本项目用 AST 同步 `@OPERATOR_REGISTRY.register()`、构造函数和 `run(storage,input_*,output_*)` 签名，不导入所有可选模型依赖。每次 run 固定 catalog/source hash，防止上游变更后继续执行旧计划。
 
 ## 多 Codex Agent 编排
 

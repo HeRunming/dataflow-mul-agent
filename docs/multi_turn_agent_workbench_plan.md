@@ -601,16 +601,18 @@ License
 - 复杂的跨 Run 自动复用。
 - 直接引入大型状态管理框架。
 
-## 13. 本轮交付状态
+## 13. 实现状态核对（2026-09-18）
 
-本计划的可运行 MVP 已完成并集成到现有工作台：
+本文件第 1–12 节是设计计划，不代表所有功能已完成。当前可运行实现与限制以
+[README](../README.md#当前范围与限制) 和 [配置/API 参考](workbench-reference.md) 为准。
 
-- Conversation Controller、消息持久化和确定性意图路由。
-- 新任务、进度查询、artifact 查询和 revision 重跑；旧 Run 保留。
-- Run SSE 与会话 API；前端实时刷新 Agent/Skill 事件。
-- Agent collaboration 聚合接口、Skill 元数据/hash 接口、Evidence 和 Revision 接口。
-- 前端 Conversation、Agent collaboration、事件时间线、代码预览和基础 Inspector。
-- README、安装说明和 API 入口同步更新。
+已提供规则式 Conversation Controller、本地 JSON 消息存储、Run SSE、基础 revision 新建、
+Agent/Skill/Evidence 聚合接口、代码预览、阶段输出、新对话按钮和 Runs 独立滚动。
+阶段播报只在前端对话框中显示，不写入持久化会话。
+
+尚未完成独立顶层 Codex 对话代理、语义阶段摘要、复杂需求合并、跨 revision 增量复用、
+完整 revision 对比、历史会话导航、Conversation SSE 游标恢复和前端自动化测试套件。
+Vue Flow / Shiki 仍为候选，当前 Pipeline 源码仍采用通用运行器结构。
 
 验证命令：
 
@@ -619,7 +621,3 @@ License
 npm run build --prefix frontend
 git diff --check
 ```
-
-Vue Flow、Shiki、Playwright 和跨 revision 增量复用属于后续体验增强，不影响当前多轮对话与真实协作观测闭环。
-
-这样可以先证明“用户可以和系统持续对话，并真实看到多 Agent 协作”，再逐步增加 revision、Vue Flow 和高级自动化能力。
