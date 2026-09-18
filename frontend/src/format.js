@@ -1,5 +1,5 @@
 /* Display helpers. Backend timestamps are epoch seconds. */
-export function toDate(value) {
+function toDate(value) {
   if (value === null || value === undefined || value === '') return null
   const date = typeof value === 'number' ? new Date(value * 1000) : new Date(value)
   return Number.isNaN(date.getTime()) ? null : date
@@ -28,8 +28,4 @@ export function cellText(value) {
 
 export function shortId(id) {
   return String(id || '').replace(/^run-/, '').slice(0, 10)
-}
-
-export function countLabel(count, unit) {
-  return `${count} ${unit}`
 }
