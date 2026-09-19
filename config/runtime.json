@@ -1,6 +1,6 @@
 {
   "backend": "codex",
-  "dataflow_root": "../DataFlow",
+  "dataflow_root": "external/DataFlow",
   "codex_bin": "codex",
   "model": "gpt-5.5",
   "reasoning_effort": "medium",

@@ -1,13 +1,10 @@
-"""Validate actual DataFlow signatures and emit standalone PipelineABC code."""
+"""Validate a plan against actual DataFlow signatures and freeze it as a spec."""
 from __future__ import annotations
 import ast
-import json
-import inspect
-import pprint
 import copy
-from .serving import normalize_chat_url
-from .prompt_templates import PROMPT_CLASSES, OPERATOR_PROMPTS, normalize_prompt, instantiate_prompt
+from .prompt_templates import OPERATOR_PROMPTS, normalize_prompt
 from .catalog import extract_source
+from .codegen import render_dataflow_pipeline, render_pipeline_runner  # re-exported
 
 def fields(value):
     if isinstance(value, str):
@@ -144,7 +141,8 @@ def compile_spec(plan, integrated, catalog, initial_keys, resources=None):
         missing = set(step["output_keys"]) - available
         if missing:
             errors.append(f"{step['step_id']}: planned output fields not produced: {sorted(missing)}")
-        b.update(module=op["module"], source_file=op["source_file"], source_sha256=op["source_sha256"],
+        b.update(module=op["module"], import_path=op.get("import_path") or op["module"],
+                 source_file=op["source_file"], source_sha256=op["source_sha256"],
                  risk="review" if b["proposal"] else op["risk"], depends_on=step["depends_on"])
         steps.append(b)
         completed.add(step["step_id"])
@@ -188,195 +186,6 @@ def compile_spec(plan, integrated, catalog, initial_keys, resources=None):
     spec = {"api_version":"dataflow.agents/v2", "steps":steps, "final_keys":final, "initial_keys":initial_keys,
             "resources":resources, "servings": {name: resources[name] for name in refs}}
     return normalize_operator_defaults(spec), errors
-
-RUNTIME_SOURCE = r'''
-import argparse
-import importlib.util
-import json
-import os
-from pathlib import Path
-from dataflow.pipeline import PipelineABC
-from dataflow.core import OperatorABC
-from dataflow.utils.storage import FileStorage
-from dataflow.utils.registry import OPERATOR_REGISTRY
-
-class CopyField(OperatorABC):
-    def run(self, storage, input_key, output_key):
-        df = storage.read("dataframe").copy()
-        df[output_key] = df[input_key]
-        storage.write(df)
-        return [output_key]
-
-def load_custom():
-    for step in SPEC["steps"]:
-        if step["proposal"]:
-            path = Path(__file__).parent / step["source_file"]
-            module_spec = importlib.util.spec_from_file_location("agent_custom_" + step["operator"], path)
-            module = importlib.util.module_from_spec(module_spec)
-            module_spec.loader.exec_module(module)
-
-RESOURCE_CACHE = {}
-
-def _walk_refs(value):
-    if isinstance(value, dict):
-        if len(value) == 1 and ("$resource" in value or "$serving" in value):
-            yield value
-        else:
-            for item in value.values(): yield from _walk_refs(item)
-    elif isinstance(value, list):
-        for item in value: yield from _walk_refs(item)
-
-def resolve(value):
-    if isinstance(value, dict) and len(value) == 1 and ("$resource" in value or "$serving" in value):
-        name = value.get("$resource", value.get("$serving"))
-        if name not in RESOURCE_CACHE:
-            resource = SPEC["resources"][name]
-            if resource["type"] != "api_llm":
-                raise ValueError("Unsupported resource type")
-            from dataflow.serving import APILLMServing_request
-            class CheckedAPIServing(APILLMServing_request):
-                def _run_threadpool(self, task_args_list, desc):
-                    responses = super()._run_threadpool(task_args_list, desc)
-                    if len(responses) != len(task_args_list) or any(
-                        value is None or (isinstance(value, str) and not value.strip())
-                        for value in responses
-                    ):
-                        raise RuntimeError(
-                            f"LLM resource {name}: request failed or returned empty content "
-                            f"(model={self.model_name}, endpoint={self.api_url}). "
-                            "Check serving URL, credentials and model; see runtime.stderr.log for HTTP errors."
-                        )
-                    return responses
-            args = dict(resource["args"])
-            args["api_url"] = normalize_chat_url(args["api_url"])
-            RESOURCE_CACHE[name] = CheckedAPIServing(**args)
-        return RESOURCE_CACHE[name]
-    if isinstance(value, dict):
-        return {key:resolve(item) for key,item in value.items()}
-    if isinstance(value, list):
-        return [resolve(item) for item in value]
-    return value
-
-def build_operator(step):
-    args = dict(step["init_args"])
-    if step["operator"] in OPERATOR_PROMPTS and not step.get("proposal"):
-        args["prompt_template"] = instantiate_prompt(step["operator"], args.get("prompt_template"))
-    return OPERATOR_REGISTRY.get(step["operator"])(**resolve(args))
-
-class GeneratedPipeline(PipelineABC):
-    def __init__(self, input_file, cache):
-        super().__init__()
-        self.storage = FileStorage(first_entry_file_name=str(input_file), cache_path=str(cache),
-                                   file_name_prefix="pipeline", cache_type="jsonl")
-        self.calls = []
-        for index, step in enumerate(SPEC["steps"]):
-            for j, (target, source) in enumerate(step["prepare_fields"].items()):
-                attr = f"copy_{index}_{j}"
-                setattr(self, attr, CopyField())
-                self.calls.append((attr, {"input_key":source, "output_key":target}))
-            attr = f"op_{index}"
-            setattr(self, attr, build_operator(step))
-            self.calls.append((attr, step["run_args"]))
-
-    def forward(self):
-        for attr, kwargs in self.calls:
-            getattr(self, attr).run(storage=self.storage.step(), **kwargs)
-
-def read_last(pipeline):
-    operators = [n for n in pipeline.op_nodes_list if n.op_obj is not None]
-    storage = operators[-1].storage
-    # FileStorage.read reads this stage's input, so read the next stage instead.
-    return storage.step().read("dataframe")
-
-def self_test(cache):
-    reports = []
-    for step in SPEC["steps"]:
-        if not step["proposal"]:
-            continue
-        for index, fixture in enumerate(step["proposal"]["tests"]):
-            directory = cache / ("test_" + step["step_id"] + "_" + str(index))
-            directory.mkdir(parents=True, exist_ok=True)
-            input_file = directory / "input.jsonl"
-            input_file.write_text("".join(json.dumps(row, ensure_ascii=False)+"\n" for row in fixture["input"]), encoding="utf-8")
-            storage = FileStorage(first_entry_file_name=str(input_file), cache_path=str(directory), cache_type="jsonl")
-            operator = build_operator(step)
-            stage = storage.step()
-            operator.run(storage=stage, **step["run_args"])
-            actual = json.loads(stage.step().read("dataframe").to_json(orient="records"))
-            expected = fixture["expected"]
-            # LLM-backed operators are intentionally semantic: equivalent
-            # labels can vary between valid model responses. Fixtures verify
-            # deterministic structure, input preservation, and non-empty
-            # declared outputs; opt into exact values with strict=true.
-            if fixture.get("strict"):
-                if actual != expected:
-                    raise AssertionError(f"Custom fixture failed: {step['step_id']}/{index}: {actual} != {expected}")
-            else:
-                if len(actual) != len(expected):
-                    raise AssertionError(f"Custom fixture row count failed: {step['step_id']}/{index}")
-                for actual_row, expected_row in zip(actual, expected):
-                    for key, value in expected_row.items():
-                        if key in step.get("input_keys", []) and actual_row.get(key) != value:
-                            raise AssertionError(f"Custom fixture input preservation failed: {step['step_id']}/{index}/{key}")
-                    for key in step.get("output_keys", []):
-                        value = actual_row.get(key)
-                        if value is None or (isinstance(value, str) and not value.strip()):
-                            raise AssertionError(f"Custom fixture output missing: {step['step_id']}/{index}/{key}")
-            reports.append({"step":step["step_id"], "fixture":index, "status":"passed", "strict":bool(fixture.get("strict"))})
-    return reports
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True)
-    parser.add_argument("--cache", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--report", required=True)
-    parser.add_argument("--execute", action="store_true")
-    args = parser.parse_args()
-    report = {"status":"blocked", "compile":False, "executed":False, "custom_tests":[]}
-    try:
-        load_custom()
-        pipeline = GeneratedPipeline(args.input, args.cache)
-        pipeline.compile()
-        report["compile"] = True
-        report["compiled_fields"] = pipeline.final_keys
-        if args.execute:
-            report["custom_tests"] = self_test(Path(args.cache))
-            pipeline.forward()
-            data = read_last(pipeline)
-            missing = set(SPEC["final_keys"]) - set(data.columns)
-            if missing:
-                raise AssertionError(f"Output fields missing: {missing}")
-            data[SPEC["final_keys"]].to_json(args.output, orient="records", lines=True, force_ascii=False)
-            report.update(status="passed", executed=True, rows=len(data), fields=list(data.columns))
-    except Exception as exc:
-        report.update(status="failed", error=f"{type(exc).__name__}: {exc}")
-    Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    if report["status"] == "failed":
-        raise SystemExit(1)
-
-if __name__ == "__main__":
-    main()
-'''
-
-def render_dataflow_pipeline(spec, **kwargs):
-    # Keep generated source close to the idiomatic DataFlow examples: imports,
-    # declarative pipeline metadata, small operator wiring class, and an
-    # explicit forward method.  The metadata is pretty-printed so reviewers
-    # can inspect fields and operator arguments without one unreadable line.
-    normalized = json.loads(json.dumps(normalize_operator_defaults(spec), sort_keys=True))
-    spec_text = pprint.pformat(normalized, width=100, sort_dicts=False)
-    source = ("\"\"\"Generated DataFlow pipeline.\n"
-              "This file is produced from a validated pipeline spec; edit the spec or agents, then regenerate.\n"
-              "\"\"\"\n\n"
-              "SPEC = " + spec_text + "\n\n"
-              "from urllib.parse import urlsplit, urlunsplit\n\n" + inspect.getsource(normalize_chat_url) + "\n"
-              + "PROMPT_CLASSES = " + pprint.pformat(PROMPT_CLASSES) + "\n"
-              + "OPERATOR_PROMPTS = " + pprint.pformat(OPERATOR_PROMPTS) + "\n\n"
-              + inspect.getsource(normalize_prompt) + "\n"
-              + inspect.getsource(instantiate_prompt) + "\n" + RUNTIME_SOURCE)
-    ast.parse(source)
-    return source
 
 def validate_pipeline_spec(spec, initial_keys):
     available = set(initial_keys)

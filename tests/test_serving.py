@@ -5,7 +5,21 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 from dataflow_agents.compiler import render_dataflow_pipeline
+from dataflow_agents.pipeline_runner import guard_servings
 from dataflow_agents.serving import normalize_chat_url
+
+
+def serving_spec(port):
+    resources = {'test': {'type': 'api_llm', 'args': {
+        'api_url': f'http://127.0.0.1:{port}/v1',
+        'model_name': 'mock', 'key_name_of_api_key': 'DF_PIPELINE_TEST_KEY',
+        'max_retries': 1, 'max_workers': 1}}}
+    return {'steps': [{'step_id': 'answer', 'operator': 'ReasoningAnswerGenerator',
+                       'import_path': 'dataflow.operators.reasoning', 'proposal': None,
+                       'init_args': {'llm_serving': {'$resource': 'test'}},
+                       'prepare_fields': {}, 'run_args': {'input_key': 'question', 'output_key': 'answer'}}],
+            'initial_keys': ['question'], 'final_keys': ['question', 'answer'],
+            'resources': resources, 'servings': resources}
 
 
 class ServingTests(unittest.TestCase):
@@ -36,21 +50,26 @@ class ServingTests(unittest.TestCase):
         thread.start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        spec = {'resources': {'test': {'type': 'api_llm', 'args': {
-            'api_url': f'http://127.0.0.1:{server.server_port}/v1',
-            'model_name': 'mock', 'key_name_of_api_key': 'DF_PIPELINE_TEST_KEY',
-            'max_retries': 1, 'max_workers': 1}}}}
+        spec = serving_spec(server.server_port)
+        source = render_dataflow_pipeline(spec)
+        # The endpoint convention is applied when the source is written, so the
+        # reviewed pipeline shows the exact URL DataFlow will call.
+        self.assertIn(f'api_url="http://127.0.0.1:{server.server_port}/v1/chat/completions"', source)
         namespace = {'__name__': 'generated_test'}
-        exec(compile(render_dataflow_pipeline(spec), '<pipeline>', 'exec'), namespace)
+        exec(compile(source, '<pipeline>', 'exec'), namespace)
         with patch.dict('os.environ', {'DF_PIPELINE_TEST_KEY': 'test-key'}):
-            serving = namespace['resolve']({'$resource': 'test'})
+            pipeline = namespace['Reasoning_APIPipeline']()
+        serving = pipeline.test
         self.addCleanup(serving.cleanup)
         self.assertEqual(serving.generate_from_input(['classify']), ['[{"group":0}]'])
         self.assertEqual(requests[0][0], '/v1/chat/completions')
         self.assertEqual(requests[0][1]['model'], 'mock')
+        # The runner, not the generated pipeline, turns silent API failures
+        # into an actionable error.
+        guard_servings(pipeline)
         for status, body in [(404, {'error': {'message': 'Invalid URL'}}),
                              (200, {'choices': [{'message': {'content': ''}}]})]:
             reply.update(status=status, body=body)
             with self.subTest(status=status):
-                with self.assertRaisesRegex(RuntimeError, 'LLM resource test: request failed or returned empty content'):
+                with self.assertRaisesRegex(RuntimeError, 'LLM serving test: request failed or returned empty content'):
                     serving.generate_from_input(['classify'])

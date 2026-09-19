@@ -1,0 +1,32 @@
+/* Syntax colours defined against theme tokens so highlighted code follows
+   the light/dark switch instead of shipping two vendor themes. */
+:root {
+  --code-bg: #f8fafc;
+  --code-text: #1f2937;
+  --code-keyword: #8250df;
+  --code-string: #0a7d55;
+  --code-number: #b45309;
+  --code-comment: #8a94a6;
+  --code-name: #1c50c9;
+  --code-builtin: #a33a2a;
+}
+:root[data-theme="dark"] {
+  --code-bg: #0d1424;
+  --code-text: #d7deee;
+  --code-keyword: #c48cf0;
+  --code-string: #6fd3a2;
+  --code-number: #e0a85a;
+  --code-comment: #6c7794;
+  --code-name: #82a9ff;
+  --code-builtin: #f09a8a;
+}
+
+.hljs { color: var(--code-text); background: transparent; }
+.hljs-keyword, .hljs-literal, .hljs-selector-tag { color: var(--code-keyword); }
+.hljs-string, .hljs-meta .hljs-string { color: var(--code-string); }
+.hljs-number, .hljs-symbol { color: var(--code-number); }
+.hljs-comment, .hljs-quote { color: var(--code-comment); font-style: italic; }
+.hljs-title, .hljs-title.class_, .hljs-title.function_, .hljs-section { color: var(--code-name); }
+.hljs-built_in, .hljs-type, .hljs-meta { color: var(--code-builtin); }
+.hljs-params { color: var(--code-text); }
+.hljs-attr, .hljs-variable { color: var(--code-name); }

@@ -1,0 +1,6 @@
+[submodule "external/DataFlow"]
+	path = external/DataFlow
+	url = https://github.com/OpenDCAI/DataFlow.git
+[submodule "external/DataFlow-WebUI"]
+	path = external/DataFlow-WebUI
+	url = https://github.com/OpenDCAI/DataFlow-WebUI.git

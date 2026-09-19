@@ -1,3 +1,5 @@
-# Run from this repository root. Install the SAME checkout used by DATAFLOW_ROOT.
--e ../DataFlow
+# Run from this repository root. Installs the DataFlow submodule that
+# DATAFLOW_ROOT also points at, so the catalog, source previews and
+# execution all read the same checkout.
+-e external/DataFlow
 -e .[web,test]

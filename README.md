@@ -4,6 +4,8 @@
 
 **用自然语言编排 DataFlow Pipeline，让生成过程、算子来源和执行证据可追溯。**
 
+<img width="1683" height="935" alt="7f14f64c-5130-4ce9-bf6d-68c9fee44c40" src="https://github.com/user-attachments/assets/2716ca39-9956-47fb-b613-61fcaf4ca445" />
+
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![DataFlow](https://img.shields.io/badge/DataFlow-1.0.10-167D8D)](https://github.com/OpenDCAI/DataFlow)
 [![Frontend](https://img.shields.io/badge/Vue-3%20%2B%20Vite-42B883?logo=vuedotjs&logoColor=white)](frontend/package.json)
@@ -15,9 +17,11 @@
 
 ---
 
-这个工作台将自然语言需求转换为声明式 Pipeline spec，再生成可以由 DataFlow 编译和执行的 Python 代码。Planner 拆解任务，多个 Operator Specialist 并行检索真实算子源码，Integrator 对齐字段和参数；独立的 Evidence Verifier 用于显式启用自动执行的流程。
+DataFlow-MultiAgent 采用多 Agent 协作架构，将自然语言数据处理需求转换为可由 DataFlow 编译和执行的 Pipeline。
 
-前端提供统一对话入口、Agent 活动、Skill 调用记录、Pipeline / Operator 完整源码预览和逐阶段输出。每个 Run 保留输入快照、角色输出、事件和版本信息，便于调试与复核。
+DataFlow-MultiAgent 基于 OpenDCAI 全自研的 [DataFlow](https://github.com/OpenDCAI/DataFlow)（8.2k stars）和 [DataFlow Harness](https://github.com/OpenDCAI/DataFlow-WebUI)（240 stars）构建，在已有数据处理能力之上引入多 Agent 协作，让自然语言需求到可执行数据流水线的转化更易用、更透明、更可追溯。
+
+为便于用户掌握协作进度、审阅产物并追溯问题，前端提供统一对话入口、Agent 活动、Skill 调用记录、Pipeline / Operator 完整源码预览和逐阶段输出。每次任务运行（Run）保留输入快照、角色输出、事件和版本信息，便于调试与复核。此外，架构设计上还明确区分不同完成程度，避免将代码生成等同于任务完成：
 
 > **生成、执行、验证是三个不同的结果。** 默认 Web 流程生成到 `READY`；点击 **Run pipeline** 后实际执行，成功为 `EXECUTED`。只有独立 Verifier 通过的流程才是 `VERIFIED`。
 
@@ -28,7 +32,8 @@
 | 多角色协作 | Codex 模式下，每次角色调用启动独立 `codex exec` 进程；Specialist 按步骤并行，Integrator 等待汇合 |
 | 基于源码的算子选择 | AST 提取 DataFlow 注册算子、参数签名与源码 hash，优先复用已有算子 |
 | 生成与运行分离 | 先静态检查 spec，再由用户显式启动 DataFlow 编译与执行 |
-| 代码与数据审阅 | Pipeline / Operator 双标签、源码变更提示、每阶段 JSONL 输出表格 |
+| 原生风格代码 | 生成的 `pipeline.py` 与 DataFlow 自带示例同构：公共包导入、命名算子属性、显式 `forward()`，可直接单独运行 |
+| 代码与数据审阅 | Pipeline / Runner / Operator 三个标签、语法高亮、源码变更提示、每阶段 JSONL 输出表格 |
 | 可观察的工作流 | SQLite jobs/events、Run SSE、角色输出、Skill 元数据、运行报告与文件 hash |
 | 对话工作台 | 新对话、进度查询、基础需求修改；阶段消息仅在对话框展示 |
 | 故障定位 | 有界重试、超时诊断、Codex 传输日志；删除操作处理重复请求和临时文件清理竞争 |
@@ -45,7 +50,7 @@ flowchart TD
     P --> S2[Operator Specialist · 步骤 2 … N]
     S1 --> I[Pipeline Integrator · 字段与参数对齐]
     S2 --> I
-    I --> G[声明式 spec / 静态检查 / pipeline.py]
+    I --> G[声明式 spec / 静态检查 / 原生 pipeline.py]
     G --> R[READY · 已生成]
     R -->|Web：点击 Run pipeline| X[DataFlow compile + execute]
     X --> E[EXECUTED · 运行报告与输出]
@@ -63,13 +68,12 @@ flowchart TD
 
 建议使用 **Python 3.12**、**Node.js 20.19+ 或 22.12+** 和 `uv`。项目声明支持 Python ≥3.10；当前本地验证使用 Python 3.12。DataFlow 的基础依赖较多，首次安装需要一定时间。
 
-以下采用相邻仓库目录，和默认配置中的 `../DataFlow` 保持一致：
+DataFlow 与 DataFlow-WebUI 以 Git submodule 的形式放在 `external/`，克隆时一并拉取：
 
 ```bash
-git clone https://github.com/OpenDCAI/DataFlow.git
-git -C DataFlow checkout 19542dc0616dacc64f9e9ea0dcfd175622ac4166
-git clone https://github.com/HeRunming/dataflow-mul-agent.git
-cd dataflow-mul-agent
+git clone --recurse-submodules https://github.com/OpenDCAI/DataFlow-MultiAgent.git
+cd DataFlow-MultiAgent
+# 已经克隆过：git submodule update --init --recursive
 
 python3.12 -m venv .venv
 .venv/bin/python -m pip install uv
@@ -80,9 +84,14 @@ npm ci --prefix frontend
 npm run build --prefix frontend
 ```
 
-`requirements-local.txt` 将相邻 DataFlow checkout 和本项目一起解析安装；`pyproject.toml` 要求 `open-dataflow==1.0.10`。上述命令固定到本轮验证的 DataFlow 提交 [`19542dc`](https://github.com/OpenDCAI/DataFlow/commit/19542dc0616dacc64f9e9ea0dcfd175622ac4166)，避免上游分支更新引入版本差异；这不是跨平台依赖锁文件。
+| 子模块 | 作用 |
+| --- | --- |
+| [`external/DataFlow`](https://github.com/OpenDCAI/DataFlow) | 运行时事实来源：算子目录、源码预览和真实执行都读这个 checkout，固定在本轮验证的提交 [`19542dc`](https://github.com/OpenDCAI/DataFlow/commit/19542dc0616dacc64f9e9ea0dcfd175622ac4166) |
+| [`external/DataFlow-WebUI`](https://github.com/OpenDCAI/DataFlow-WebUI) | 界面与交互参考，不参与运行，也不被打包 |
 
-如果 DataFlow 位于其他目录，请同步修改 editable 安装路径和 `DATAFLOW_ROOT`，使索引、源码预览和执行指向同一 checkout。不要用 `--no-deps` 或仅设置 `PYTHONPATH` 替代安装。模型权重、CUDA/vLLM 等可选组件按选用算子另行配置。
+`requirements-local.txt` 把 `external/DataFlow` 和本项目一起解析安装；`pyproject.toml` 要求 `open-dataflow==1.0.10`。子模块固定提交，避免上游分支更新引入版本差异；这不是跨平台依赖锁文件。
+
+要改用其他 DataFlow checkout，设置 `DATAFLOW_ROOT` 并同步修改 editable 安装路径，使索引、源码预览和执行指向同一份代码。不要用 `--no-deps` 或仅设置 `PYTHONPATH` 替代安装。模型权重、CUDA/vLLM 等可选组件按选用算子另行配置。
 
 ### 2. 先试离线模式
 
@@ -125,7 +134,7 @@ Provider 需要兼容 **Responses API**。以上占位值需替换；启动命�
 
 1. **开始需求**：从 DataFlow 助手发送请求。点击 **新对话** 创建独立上下文；已有 Run 继续保留。
 2. **观察生成**：查看阶段播报、角色状态、Skill 调用和失败事件。Runs 列表独立滚动，支持选择历史任务。
-3. **审阅代码**：检查完整 Pipeline 和各步骤 Operator 源码。源码缺失或 hash 变化会提示。
+3. **审阅代码**：`pipeline.py` 是可直接 `python pipeline.py` 运行的原生 DataFlow pipeline；`run_pipeline.py` 是工作台执行器（fixtures、运行报告、输出投影）；Operator 标签展示每一步的真实源码。源码缺失或 hash 变化会提示。
 4. **显式执行**：配置需要的 Serving 后点击 **Run pipeline**，查看状态、报错和 Stage output review。
 5. **继续反馈**：可询问进度或提出修改；当前 revision 会新建 Run，而不会覆盖父 Run。建议发送完整修改后的需求，避免依赖尚未实现的复杂上下文推理。
 
@@ -153,7 +162,9 @@ runs/run-…/
 ├── team.sqlite / events.jsonl          # 任务状态与事件
 ├── agents/<job>/<attempt>/            # 角色输入、输出、Codex 轨迹、传输诊断
 ├── plan.json / bindings.json          # 规划与算子绑定
-├── pipeline-spec.json / pipeline.py   # 声明式契约与可执行代码
+├── pipeline-spec.json                 # 声明式契约
+├── pipeline.py / run_pipeline.py     # 原生风格 pipeline 与工作台执行器
+├── custom/<Operator>.py              # 本次生成的算子（如有）
 ├── static-validation.json            # 生成阶段静态检查
 ├── runtime-report.json / output.jsonl # 实际执行后才产生
 └── verification.json / integrity.json # 取决于是否运行独立验证流程
@@ -187,7 +198,7 @@ git diff --check
 
 - **Controller 为 MVP**：使用关键字路由和模板回复，尚未实现独立顶层 Codex 推理代理；阶段播报来自真实事件，但不是模型生成的语义摘要。
 - **Revision 完整重跑**：保留父 Run 引用和原输入，不提供跨 Run 增量复用、完善的 diff / 回滚界面或可靠的复杂需求合并。
-- **生成代码是通用执行器**：spec 多行展示，运行时按步骤构造 Operator；尚未生成与 DataFlow 手写示例完全一致的逐算子显式类结构。
+- **生成代码不做手写级重构**：`pipeline.py` 采用 DataFlow 原生结构（公共包导入、逐算子属性、显式 `forward()`），但算子顺序与参数直接来自 spec，不会合并步骤或重命名业务变量。
 - **实时能力以 Run SSE 为主**：前端有轮询回退；Conversation SSE 仍是实验接口，尚无完整的恢复游标保证。会话保存在本地 JSON，非多进程事务存储。
 - **数据与历史交互仍有限**：Runs API 当前最多返回 100 条，没有分页；前端尚无完整历史会话切换与 revision 对比。
 - **本地运行边界**：服务默认绑定 localhost，无应用级鉴权；本地子进程不等同于容器沙箱。生产部署需要额外的身份校验、执行隔离与密钥管理。

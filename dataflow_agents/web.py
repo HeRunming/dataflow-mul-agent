@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import discover_operator_catalog, load_catalog, search_catalog
-from .compiler import render_dataflow_pipeline, normalize_operator_defaults
+from .compiler import normalize_operator_defaults
+from .codegen import RUNNER_FILENAME, write_pipeline_sources
 from .serving import normalize_chat_url
 from .execution import approve, execute
 from .identities import IDENTITIES
@@ -727,7 +728,11 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
                     except (OSError, UnicodeError):
                         item["error"] = "Operator source file is missing or unreadable"
                 operators.append(item)
-            return {"run_id": run_id, "filename": path.name, "code": path.read_text(encoding="utf-8"), "operators": operators}
+            runner = root / RUNNER_FILENAME
+            return {"run_id": run_id, "filename": path.name, "code": path.read_text(encoding="utf-8"),
+                    "operators": operators, "spec": _read_json(root / "pipeline-spec.json", {}) or {},
+                    "runner": {"filename": RUNNER_FILENAME,
+                               "code": runner.read_text(encoding="utf-8") if runner.exists() else ""}}
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"Cannot read pipeline code: {exc}") from exc
 
@@ -775,7 +780,7 @@ def create_app(config: dict[str, Any] | None = None) -> FastAPI:
                         spec["resources"][name] = cfg["resources"][name]
                 spec["servings"] = dict(spec.get("resources", {}))
                 write_json(root / "pipeline-spec.json", spec)
-                (root / "pipeline.py").write_text(render_dataflow_pipeline(spec), encoding="utf-8")
+                write_pipeline_sources(root, spec, _read_json(root / "request.json", {}).get("request"))
                 store.event("execution.requested", "human", confirmation="Run pipeline")
                 runtime = execute(root, cfg, user_requested=True)
                 write_json(root / "runtime-report.json", runtime)

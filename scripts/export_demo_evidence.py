@@ -131,7 +131,7 @@ def main():
                     trace.append(entry)
                 exp.write(f'{rid}/{relative}/codex-trace.json',trace,eventpath,'event metadata; item text/reasoning/commands omitted; validated final output is output.json')
         exp.write(f'{rid}/agent-attempts.json',attempts)
-        for name in ('status.json','plan.json','bindings.json','static-validation.json','pipeline-spec.json','pipeline.py',
+        for name in ('status.json','plan.json','bindings.json','static-validation.json','pipeline-spec.json','pipeline.py','run_pipeline.py',
                      'runtime-report.json','verification.json','metrics.json','traces.json','result.json','integrity.json','revision.json'):
             exp.copy(root/name,f'{rid}/{name}')
         for path in (root/'custom').glob('*.py'):exp.copy(path,f'{rid}/custom/{path.name}')

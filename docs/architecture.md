@@ -24,7 +24,9 @@ SQLite 是 join 和恢复的状态权威，`jobs.json/events.jsonl` 保存 role�
 
 ## DataFlow 运行契约
 
-编译器将声明式 spec 渲染为 `PipelineABC`：每个 operator 挂到 `self.op_*`，`forward()` 调用 `storage.step()`，然后由 DataFlow `compile()` 构建 key graph。原地 refiner 由 compiler 的 `prepare_fields` 复制列后再运行；过滤算子保留列但减少行；输出列由 `final_keys` 投影。构造参数、运行参数、输出默认值和资源引用都做 allowlist 校验。
+`compiler.py` 负责校验并冻结 spec；`codegen.py` 把 spec 渲染成与 `dataflow/statics/pipelines` 同构的源码：算子从公共包导入（`from dataflow.operators.general_text import HashDeduplicateFilter`，由 catalog 解析出 `import_path`），serving 以字面参数构造，每个步骤是一个命名属性（`hash_deduplicate_filter_step2`），`forward()` 逐个调用 `run(storage=self.storage.step(), …)`，文件末尾是标准的 `if __name__ == "__main__"` 块。生成的 `pipeline.py` 不含 SPEC 字典、注册表查找或 argparse，可以直接复制进 DataFlow checkout 运行。
+
+工作台执行所需的其余能力放在同目录的 `run_pipeline.py`（来自 `pipeline_runner.py`）：导入 pipeline 类、按运行目录覆写输入与 cache、给 serving 挂上空响应检查、执行生成算子的 fixtures、`compile()` 后 `forward()`，最后按 `final_keys` 投影输出并写 `runtime-report.json`。原地 refiner 仍由 `prepare_fields` 生成的 `CopyFieldRefiner` 复制列后再运行；过滤算子保留列但减少行。构造参数、运行参数、输出默认值和资源引用都做 allowlist 校验；`prompt_template` 始终显式渲染为具体 Prompt 类，避免 DataFlow 默认值是类而非实例带来的构造失败。
 
 ## 新算子、资源和安全
 
