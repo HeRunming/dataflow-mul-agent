@@ -4,6 +4,8 @@
 
 **用自然语言编排 DataFlow Pipeline，让生成过程、算子来源和执行证据可追溯。**
 
+<img width="1683" height="935" alt="7f14f64c-5130-4ce9-bf6d-68c9fee44c40" src="https://github.com/user-attachments/assets/2716ca39-9956-47fb-b613-61fcaf4ca445" />
+
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![DataFlow](https://img.shields.io/badge/DataFlow-1.0.10-167D8D)](https://github.com/OpenDCAI/DataFlow)
 [![Frontend](https://img.shields.io/badge/Vue-3%20%2B%20Vite-42B883?logo=vuedotjs&logoColor=white)](frontend/package.json)
@@ -15,9 +17,11 @@
 
 ---
 
-这个工作台将自然语言需求转换为声明式 Pipeline spec，再生成可以由 DataFlow 编译和执行的 Python 代码。Planner 拆解任务，多个 Operator Specialist 并行检索真实算子源码，Integrator 对齐字段和参数；独立的 Evidence Verifier 用于显式启用自动执行的流程。
+DataFlow-MultiAgent 采用多 Agent 协作架构，将自然语言数据处理需求转换为可由 DataFlow 编译和执行的 Pipeline。
 
-前端提供统一对话入口、Agent 活动、Skill 调用记录、Pipeline / Operator 完整源码预览和逐阶段输出。每个 Run 保留输入快照、角色输出、事件和版本信息，便于调试与复核。
+DataFlow-MultiAgent 基于 OpenDCAI 全自研的 [DataFlow](https://github.com/OpenDCAI/DataFlow)（8.2k stars）和 [DataFlow Harness](https://github.com/OpenDCAI/DataFlow-WebUI)（240 stars）构建，在已有数据处理能力之上引入多 Agent 协作，让自然语言需求到可执行数据流水线的转化更易用、更透明、更可追溯。
+
+为便于用户掌握协作进度、审阅产物并追溯问题，前端提供统一对话入口、Agent 活动、Skill 调用记录、Pipeline / Operator 完整源码预览和逐阶段输出。每次任务运行（Run）保留输入快照、角色输出、事件和版本信息，便于调试与复核。此外，架构设计上还明确区分不同完成程度，避免将代码生成等同于任务完成：
 
 > **生成、执行、验证是三个不同的结果。** 默认 Web 流程生成到 `READY`；点击 **Run pipeline** 后实际执行，成功为 `EXECUTED`。只有独立 Verifier 通过的流程才是 `VERIFIED`。
 
