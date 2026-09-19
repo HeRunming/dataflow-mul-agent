@@ -7,6 +7,7 @@ from pathlib import Path
 
 from dataflow_agents.codegen import (RUNNER_FILENAME, literal, pipeline_class_name,
                                      render_dataflow_pipeline, write_pipeline_sources)
+from dataflow_agents.pipeline_runner import explain_empty_stage, stage_rows
 
 
 def step(**overrides):
@@ -102,3 +103,31 @@ class CodegenTests(unittest.TestCase):
         nested = {'keys': ['x'] * 30}
         self.assertIn('\n', literal(nested))
         self.assertEqual(ast.literal_eval(literal(nested)), json.loads(json.dumps(nested)))
+
+
+class RuntimeDiagnosticsTests(unittest.TestCase):
+    """An emptied stage must be reported as such, not as a missing column."""
+
+    def counts(self, directory, sizes):
+        for index, rows in enumerate(sizes, start=1):
+            path = Path(directory) / f"dataflow_cache_step_step{index}.jsonl"
+            path.write_text("".join(json.dumps({"a": i}) + "\n" for i in range(rows)), encoding="utf-8")
+        return stage_rows(directory)
+
+    def test_stage_rows_follow_execution_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            # Written out of order, and with a file the pipeline did not produce.
+            (Path(directory) / "unrelated.jsonl").write_text("{}\n", encoding="utf-8")
+            rows = self.counts(directory, [3, 0, 2])
+            self.assertEqual([item["step"] for item in rows], [1, 2, 3])
+            self.assertEqual([item["rows"] for item in rows], [3, 0, 2])
+
+    def test_empty_stage_names_the_operator_that_dropped_every_row(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = self.counts(directory, [0, 0])
+            message = explain_empty_stage(rows, ['reasoning_question_filter_step1', 'answer_step2'])
+            self.assertIn('Step 1 (reasoning_question_filter_step1) wrote 0 rows', message)
+            self.assertIn('filtered out', message)
+        self.assertIsNone(explain_empty_stage([{'step': 1, 'rows': 4}], ['keep_step1']))
+        # An unnamed step still produces a usable message.
+        self.assertIn('step 2', explain_empty_stage([{'step': 2, 'rows': 0}], []))

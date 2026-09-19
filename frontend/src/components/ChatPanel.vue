@@ -4,7 +4,7 @@ import InputSource from './InputSource.vue'
 import { useWorkbench } from '../composables/useWorkbench'
 
 const emit = defineEmits(['manage-datasets'])
-const { chatMessages, sending, startingConversation, conversation, sendMessage } = useWorkbench()
+const { chatMessages, sending, startingConversation, conversation, sendMessage, inputSummary } = useWorkbench()
 
 const draft = ref('')
 const showInput = ref(false)
@@ -95,9 +95,13 @@ defineExpose({ focus: () => composer.value?.focus() })
           {{ sending ? '发送中…' : '发送' }}
         </button>
       </div>
-      <button class="toggle-input" :aria-expanded="showInput" @click="showInput = !showInput">
+      <button class="toggle-input" :class="inputSummary.tone" :aria-expanded="showInput"
+              :title="inputSummary.kind === 'sample' ? '仍在使用内置示例数据，点击更换为你自己的数据' : '查看或更换输入数据'"
+              @click="showInput = !showInput">
         <span class="chevron" :class="{ open: showInput }">›</span>
-        输入数据与生成选项
+        <span>输入</span>
+        <span class="summary">{{ inputSummary.text }}</span>
+        <span v-if="inputSummary.kind === 'sample'" class="tag warn">未更换</span>
       </button>
     </div>
 
@@ -182,6 +186,10 @@ defineExpose({ focus: () => composer.value?.focus() })
   cursor: pointer;
 }
 .toggle-input:hover { color: var(--brand); }
+.toggle-input .summary { font-family: var(--font-mono); font-size: 10.5px; }
+.toggle-input.warn { color: var(--warn); }
+.toggle-input.danger { color: var(--danger); }
+.toggle-input.brand { color: var(--brand); }
 .chevron { display: inline-block; transition: transform 0.16s ease; font-size: 14px; line-height: 1; }
 .chevron.open { transform: rotate(90deg); }
 </style>

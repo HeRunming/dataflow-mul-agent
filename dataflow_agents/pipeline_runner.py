@@ -14,6 +14,7 @@ import argparse
 import importlib.util
 import inspect
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -130,6 +131,39 @@ def self_test(spec, instances, cache):
     return reports
 
 
+def stage_rows(cache):
+    """Rows each operator wrote, in execution order.
+
+    FileStorage names every stage ``<prefix>_step<N>.jsonl``, so the files
+    give a per-step row count without instrumenting the pipeline itself.
+    """
+    counts = []
+    for path in Path(cache).glob("*_step*.jsonl"):
+        match = re.search(r"step(\d+)\.jsonl$", path.name)
+        if not match:
+            continue
+        rows = sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+        counts.append({"step": int(match.group(1)), "rows": rows, "file": path.name})
+    return sorted(counts, key=lambda item: item["step"])
+
+
+def explain_empty_stage(stages, operators):
+    """Turn 'a filter removed every row' into an error that says so.
+
+    An emptied stage surfaces downstream as a missing-column error from the
+    next operator, which reads like a pipeline defect rather than what it is:
+    no row survived, usually because the input data does not match the request.
+    """
+    empty = next((item for item in stages if item["rows"] == 0), None)
+    if empty is None:
+        return None
+    index = empty["step"] - 1
+    name = operators[index] if 0 <= index < len(operators) else f"step {empty['step']}"
+    return (f"Step {empty['step']} ({name}) wrote 0 rows: every row was filtered out, so the next "
+            "operator finds none of its input columns. Check that the submitted input data matches "
+            "the request — a filter that rejects the whole dataset is the usual cause.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True)
@@ -163,6 +197,11 @@ def main():
             report.update(status="passed", executed=True, rows=len(data), fields=list(data.columns))
     except Exception as exc:
         report.update(status="failed", error=f"{type(exc).__name__}: {exc}")
+        explanation = explain_empty_stage(stage_rows(args.cache), report.get("operators", []))
+        if explanation:
+            report.update(error=explanation, error_code="EMPTY_STAGE",
+                          underlying_error=f"{type(exc).__name__}: {exc}")
+    report["stage_rows"] = stage_rows(args.cache)
     Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     if report["status"] == "failed":
         raise SystemExit(1)

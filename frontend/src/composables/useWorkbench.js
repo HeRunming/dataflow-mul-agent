@@ -70,6 +70,10 @@ export const stateMeta = (state) => STATE_META[state] || { label: state || '未�
 export const eventMeta = (event) => EVENT_META[event] || { label: event, tone: 'muted' }
 export const agentMeta = (agent) => AGENT_META[agent] || { name: agent, duty: '' }
 
+/* The built-in sample. A request is only ever run against the data the
+   composer holds, so the UI has to say when that data is still this. */
+export const DEFAULT_INPUT = '[{"raw_content":"  Hello   world  "},{"raw_content":"Hello world"}]'
+
 export const RUNNING_STATES = ['QUEUED', 'PLANNING', 'BINDING', 'INTEGRATING', 'VALIDATING', 'RUNNING']
 export const STATE_ORDER = ['PLANNING', 'BINDING', 'INTEGRATING', 'READY']
 export const EXECUTABLE_STATES = ['READY', 'VERIFIED', 'EXECUTED', 'APPROVAL_REQUIRED', 'RESOURCE_REQUIRED', 'BLOCKED']
@@ -93,7 +97,7 @@ function createStore() {
 
   const datasets = ref([])
   const selectedDatasetId = ref('')
-  const inputText = ref('[{"raw_content":"  Hello   world  "},{"raw_content":"Hello world"}]')
+  const inputText = ref(DEFAULT_INPUT)
   const allowCustom = ref(true)
 
   const resources = ref([])
@@ -144,6 +148,28 @@ function createStore() {
         (runFilter.value === 'attention' && ['BLOCKED', 'REFUSED', 'RESOURCE_REQUIRED', 'APPROVAL_REQUIRED'].includes(run.state))
       return matchesQuery && matchesFilter
     })
+  })
+
+  /* What the next message will actually be run against. */
+  const inputSummary = computed(() => {
+    if (selectedDatasetId.value) {
+      const item = datasets.value.find((entry) => entry.id === selectedDatasetId.value)
+      return { kind: 'dataset', tone: 'brand', rows: item?.rows ?? null,
+               text: `数据集 ${item?.name || selectedDatasetId.value}${item?.rows ? ` · ${item.rows} 行` : ''}` }
+    }
+    const text = inputText.value.trim()
+    if (!text) return { kind: 'empty', tone: 'warn', rows: 0, text: '未提供输入，将使用仓库示例数据' }
+    try {
+      const rows = JSON.parse(text)
+      if (!Array.isArray(rows)) throw new Error('not an array')
+      const fields = rows.length ? Object.keys(rows[0]) : []
+      const shape = `${rows.length} 行 · ${fields.join(', ') || '无字段'}`
+      return inputText.value === DEFAULT_INPUT
+        ? { kind: 'sample', tone: 'warn', rows: rows.length, text: `示例数据 · ${shape}` }
+        : { kind: 'inline', tone: 'muted', rows: rows.length, text: shape }
+    } catch {
+      return { kind: 'invalid', tone: 'danger', rows: 0, text: 'JSON 无法解析' }
+    }
   })
 
   const currentState = computed(() => selected.value?.state || 'IDLE')
@@ -419,7 +445,7 @@ function createStore() {
     backendMode, toasts, notify, dismiss,
     runs, visibleRuns, runQuery, runFilter, selectedId, selected, events, timeline, agentOutputs,
     stages, selectedStage, collaboration, runSkills, runEvidence, deletingRuns,
-    datasets, selectedDatasetId, inputText, allowCustom,
+    datasets, selectedDatasetId, inputText, allowCustom, inputSummary,
     resources, models, conversation, conversationMessages, liveMessages, chatMessages,
     loadingRuns, loadingRun, sending, executing, startingConversation,
     currentState, steps, isRunning, canExecute,
