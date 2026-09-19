@@ -1,10 +1,10 @@
 <div align="center">
 
-# DataFlow Multi-Agent Workbench
+# DataFlow Multi-Agent System
 
 **用自然语言编排 DataFlow Pipeline，让生成过程、算子来源和执行证据可追溯。**
 
-<img width="1683" height="935" alt="7f14f64c-5130-4ce9-bf6d-68c9fee44c40" src="https://github.com/user-attachments/assets/2716ca39-9956-47fb-b613-61fcaf4ca445" />
+<img width="1683" height="935" alt="DataFlow-MultiAgent" src="https://github.com/user-attachments/assets/89d5923b-5ed8-40a1-a82f-2978e867b0da" />
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![DataFlow](https://img.shields.io/badge/DataFlow-1.0.10-167D8D)](https://github.com/OpenDCAI/DataFlow)
