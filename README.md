@@ -64,13 +64,12 @@ flowchart TD
 
 建议使用 **Python 3.12**、**Node.js 20.19+ 或 22.12+** 和 `uv`。项目声明支持 Python ≥3.10；当前本地验证使用 Python 3.12。DataFlow 的基础依赖较多，首次安装需要一定时间。
 
-以下采用相邻仓库目录，和默认配置中的 `../DataFlow` 保持一致：
+DataFlow 与 DataFlow-WebUI 以 Git submodule 的形式放在 `external/`，克隆时一并拉取：
 
 ```bash
-git clone https://github.com/OpenDCAI/DataFlow.git
-git -C DataFlow checkout 19542dc0616dacc64f9e9ea0dcfd175622ac4166
-git clone https://github.com/HeRunming/dataflow-mul-agent.git
-cd dataflow-mul-agent
+git clone --recurse-submodules https://github.com/OpenDCAI/DataFlow-MultiAgent.git
+cd DataFlow-MultiAgent
+# 已经克隆过：git submodule update --init --recursive
 
 python3.12 -m venv .venv
 .venv/bin/python -m pip install uv
@@ -81,9 +80,14 @@ npm ci --prefix frontend
 npm run build --prefix frontend
 ```
 
-`requirements-local.txt` 将相邻 DataFlow checkout 和本项目一起解析安装；`pyproject.toml` 要求 `open-dataflow==1.0.10`。上述命令固定到本轮验证的 DataFlow 提交 [`19542dc`](https://github.com/OpenDCAI/DataFlow/commit/19542dc0616dacc64f9e9ea0dcfd175622ac4166)，避免上游分支更新引入版本差异；这不是跨平台依赖锁文件。
+| 子模块 | 作用 |
+| --- | --- |
+| [`external/DataFlow`](https://github.com/OpenDCAI/DataFlow) | 运行时事实来源：算子目录、源码预览和真实执行都读这个 checkout，固定在本轮验证的提交 [`19542dc`](https://github.com/OpenDCAI/DataFlow/commit/19542dc0616dacc64f9e9ea0dcfd175622ac4166) |
+| [`external/DataFlow-WebUI`](https://github.com/OpenDCAI/DataFlow-WebUI) | 界面与交互参考，不参与运行，也不被打包 |
 
-如果 DataFlow 位于其他目录，请同步修改 editable 安装路径和 `DATAFLOW_ROOT`，使索引、源码预览和执行指向同一 checkout。不要用 `--no-deps` 或仅设置 `PYTHONPATH` 替代安装。模型权重、CUDA/vLLM 等可选组件按选用算子另行配置。
+`requirements-local.txt` 把 `external/DataFlow` 和本项目一起解析安装；`pyproject.toml` 要求 `open-dataflow==1.0.10`。子模块固定提交，避免上游分支更新引入版本差异；这不是跨平台依赖锁文件。
+
+要改用其他 DataFlow checkout，设置 `DATAFLOW_ROOT` 并同步修改 editable 安装路径，使索引、源码预览和执行指向同一份代码。不要用 `--no-deps` 或仅设置 `PYTHONPATH` 替代安装。模型权重、CUDA/vLLM 等可选组件按选用算子另行配置。
 
 ### 2. 先试离线模式
 

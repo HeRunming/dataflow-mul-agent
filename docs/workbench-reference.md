@@ -9,7 +9,7 @@
 | 配置 / 环境变量 | 用途 |
 | --- | --- |
 | `backend` / `CODEX_BACKEND` | `codex` 或有限的确定性 `offline` 后端 |
-| `dataflow_root` / `DATAFLOW_ROOT` | 真实 DataFlow 源码目录；相对配置路径按项目根目录解析 |
+| `dataflow_root` / `DATAFLOW_ROOT` | 真实 DataFlow 源码目录，默认是 `external/DataFlow` 子模块；相对配置路径按项目根目录解析 |
 | `codex_bin` / `CODEX_BIN` | Codex CLI 可执行文件 |
 | `model` / `CODEX_MODEL` | 编排 Agent 使用的模型 |
 | `base_url` / `DF_CODEX_BASE_URL` | Responses API 的基础 URL |

@@ -82,7 +82,7 @@ def load_config(path=None, **overrides):
     if secret_path.exists():
         cfg["resource_secrets"] = json.loads(secret_path.read_text(encoding="utf-8"))
     cfg.update({k:v for k,v in overrides.items() if v is not None})
-    cfg["dataflow_root"] = str(Path(os.getenv("DATAFLOW_ROOT", cfg.get("dataflow_root", "../DataFlow"))).expanduser())
+    cfg["dataflow_root"] = str(Path(os.getenv("DATAFLOW_ROOT", cfg.get("dataflow_root", "external/DataFlow"))).expanduser())
     if not Path(cfg["dataflow_root"]).is_absolute():
         cfg["dataflow_root"] = str((ROOT / cfg["dataflow_root"]).resolve())
     cfg.setdefault("python_bin", sys.executable)
